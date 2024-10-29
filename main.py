@@ -6,7 +6,8 @@ from fastapi.templating import Jinja2Templates
 from pathlib import Path
 import os
 import cv2
-
+import requests
+import json
 app = FastAPI()
 
 # Add CORS middleware
@@ -18,7 +19,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-VIDEO_DIR = r"D:\Questionable\videos"  # Replace with your video folder path
+# Load configuration from a JSON file
+CONFIG_FILE = "config.json"
+
+def load_config():
+    with open(CONFIG_FILE, 'r') as f:
+        return json.load(f)
+
+config = load_config()
+VIDEO_DIR = config.get("video_dir")  # Default to 'D:' if not found
 THUMBNAIL_DIR = "thumbnails"
 
 # Create thumbnails directory if it doesn't exist
@@ -58,7 +67,37 @@ async def list_videos(request: Request):
     video_files = get_video_files()
     if not video_files:
         raise HTTPException(status_code=404, detail="No videos found.")
-    return templates.TemplateResponse("list_videos.html", {"request": request, "video_files": video_files})
+    return templates.TemplateResponse("index.html", {"request": request, "video_files": video_files})
+
+@app.post("/api/download")
+async def download_video(request: Request):
+    data = await request.json()
+    url = data.get('url')
+
+    if not url or not url.lower().endswith(('.webm', '.mp4')):
+        raise HTTPException(status_code=400, detail="Invalid URL or unsupported file format.")
+
+    filename = url.split("/")[-1]
+    save_path = os.path.join(VIDEO_DIR, filename)
+
+    try:
+        response = requests.get(url, stream=True)
+        response.raise_for_status()
+
+        with open(save_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=1024*1024):
+                if chunk:
+                    f.write(chunk)
+
+        # Generate a thumbnail for the downloaded video
+        thumbnail_path = os.path.join(THUMBNAIL_DIR, f"{Path(filename).stem}.jpg")
+        generate_thumbnail(save_path, thumbnail_path)
+
+        return {"message": f"Video '{filename}' downloaded and thumbnail generated successfully."}
+
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=500, detail=f"Failed to download video: {str(e)}")
+
 
 @app.get("/thumbnails/{thumbnail_name}")
 async def get_thumbnail(thumbnail_name: str):
@@ -74,12 +113,18 @@ async def play_video(video_name: str, request: Request):
     video_path = os.path.join(VIDEO_DIR, video_name)
     if not os.path.isfile(video_path):
         raise HTTPException(status_code=404, detail="Video not found.")
+    
+    # Determine which template to use based on video format
+    if video_name.endswith(".webm"):
+        template_name = "play_webm.html"  # Template for .webm files
+    else:
+        template_name = "play_other.html"  # Template for other video formats
 
-    video_format = "webm" if video_name.endswith(".webm") else "other"
     return templates.TemplateResponse(
-        "play_video.html",
-        {"request": request, "video_name": video_name, "video_format": video_format}
+        template_name,
+        {"request": request, "video_name": video_name}
     )
+
 
 @app.get("/videos/{video_name}")
 async def stream_video(request: Request, video_name: str, range: str = Header(None)):

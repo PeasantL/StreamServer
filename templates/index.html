@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video List</title>
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin: 0;
+            padding: 20px;
+            min-height: 100vh;
+            background-color: #191919;
+            background-size: cover;
+            color: #f0f0f0;
+        }
+        h1 {
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        .container {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+        .video-box {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            width: 220px;
+            padding: 10px;
+            margin: 10px;
+            background-color: #333;
+            border: 2px solid #444;
+            border-radius: 8px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.5);
+            overflow: hidden;
+            text-align: center;
+            color: #f0f0f0;
+        }
+        .thumbnail {
+            width: 100%;
+            height: auto;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        .video-title {
+            margin-top: 10px;
+            padding: 5px;
+            word-wrap: break-word;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: normal;
+        }
+        .url-form {
+            display: flex;
+            margin-bottom: 20px;
+        }
+        .url-input {
+            padding: 10px;
+            font-size: 16px;
+            border: 2px solid #444;
+            border-radius: 8px 0 0 8px;
+            width: 300px;
+        }
+        .download-button {
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+            background-color: #4CAF50;
+            color: white;
+            border: 2px solid #444;
+            border-radius: 0 8px 8px 0;
+            border-left: none;
+        }
+        .loading-spinner {
+            display: none;
+            border: 6px solid #f3f3f3;
+            border-top: 6px solid #4CAF50;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin-top: 20px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <h1>Select a Video to Stream</h1>
+
+    <!-- URL Entry Form and Download Button -->
+    <div class="url-form">
+        <input type="text" id="videoUrl" class="url-input" placeholder="Enter video URL (webm/mp4)">
+        <button id="downloadButton" class="download-button" onclick="downloadVideo()">Download</button>
+    </div>
+
+    <!-- Loading Spinner -->
+    <div id="loadingSpinner" class="loading-spinner"></div>
+
+    <!-- Video List -->
+    <div class="container" id="videoContainer">
+        {% for video in video_files %}
+        <div class="video-box">
+            <a href="/play/{{ video }}">
+                <img src="/thumbnails/{{ video.split('.')[0] }}.jpg" class="thumbnail" alt="{{ video }}" />
+            </a>
+            <div class="video-title">{{ video }}</div>
+        </div>
+        {% endfor %}
+    </div>
+
+    <script>
+        async function downloadVideo() {
+            const videoUrl = document.getElementById('videoUrl').value;
+            const downloadButton = document.getElementById('downloadButton');
+            const loadingSpinner = document.getElementById('loadingSpinner');
+
+            if (!videoUrl) {
+                alert('Please enter a video URL.');
+                return;
+            }
+
+            // Disable download button and show loading spinner
+            downloadButton.disabled = true;
+            loadingSpinner.style.display = 'block';
+
+            try {
+                const response = await fetch('/api/download', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ url: videoUrl }),
+                });
+
+                if (response.ok) {
+                    // Refresh the video list after download completes
+                    await refreshVideoList();
+                } else {
+                    alert('Failed to download video. Please check the URL or try again.');
+                }
+            } catch (error) {
+                console.error('Error downloading video:', error);
+                alert('An error occurred. Please try again.');
+            } finally {
+                // Re-enable the download button and hide loading spinner
+                downloadButton.disabled = false;
+                loadingSpinner.style.display = 'none';
+            }
+        }
+
+        async function refreshVideoList() {
+            const response = await fetch('/');
+            const html = await response.text();
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(html, 'text/html');
+            const videoContainer = doc.getElementById('videoContainer');
+            document.getElementById('videoContainer').innerHTML = videoContainer.innerHTML;
+        }
+    </script>
+</body>
+</html>
