@@ -1,0 +1,21 @@
+body {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    margin: 0;
+    background-color: #2b2b2b; /* Dark grey background */
+}
+
+.video-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    flex-direction: column;
+}
+
+video {
+    max-width: 100%;
+    max-height: 100%;
+    outline: none; /* Removes the outline on focus */
+}

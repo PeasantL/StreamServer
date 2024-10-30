@@ -1,13 +1,14 @@
-from fastapi import FastAPI, HTTPException, Request, Header
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi import FastAPI, HTTPException, Request, Header, BackgroundTasks
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pathlib import Path
+from fastapi.staticfiles import StaticFiles
 import os
-import cv2
-import requests
+import tempfile
+import subprocess
+import shutil
 import json
+
 app = FastAPI()
 
 # Add CORS middleware
@@ -27,39 +28,16 @@ def load_config():
         return json.load(f)
 
 config = load_config()
-VIDEO_DIR = config.get("video_dir")  # Default to 'D:' if not found
+VIDEO_DIR = config.get("video_dir")
 THUMBNAIL_DIR = "thumbnails"
 
-# Create thumbnails directory if it doesn't exist
 os.makedirs(THUMBNAIL_DIR, exist_ok=True)
 
-# Initialize Jinja2 templates directory
 templates = Jinja2Templates(directory="templates")
 
 def get_video_files():
     """Fetch all video files in the directory."""
     return [f for f in os.listdir(VIDEO_DIR) if f.endswith(('.mp4', '.webm', '.mov', '.avi', '.mkv'))]
-
-def generate_thumbnail(video_path, thumbnail_path):
-    """Generate a thumbnail for a video file."""
-    cap = cv2.VideoCapture(video_path)
-    success, frame = cap.read()
-    if success:
-        cv2.imwrite(thumbnail_path, frame)
-    cap.release()
-
-# Mount the static files directory
-app.mount("/static", StaticFiles(directory="static"), name="static")
-
-@app.on_event("startup")
-def generate_all_thumbnails():
-    """Generate thumbnails for all videos."""
-    video_files = get_video_files()
-    for video_file in video_files:
-        video_path = os.path.join(VIDEO_DIR, video_file)
-        thumbnail_path = os.path.join(THUMBNAIL_DIR, f"{Path(video_file).stem}.jpg")
-        if not os.path.exists(thumbnail_path):
-            generate_thumbnail(video_path, thumbnail_path)
 
 @app.get("/")
 async def list_videos(request: Request):
@@ -69,70 +47,15 @@ async def list_videos(request: Request):
         raise HTTPException(status_code=404, detail="No videos found.")
     return templates.TemplateResponse("index.html", {"request": request, "video_files": video_files})
 
-@app.post("/api/download")
-async def download_video(request: Request):
-    data = await request.json()
-    url = data.get('url')
-
-    if not url or not url.lower().endswith(('.webm', '.mp4')):
-        raise HTTPException(status_code=400, detail="Invalid URL or unsupported file format.")
-
-    filename = url.split("/")[-1]
-    save_path = os.path.join(VIDEO_DIR, filename)
-
-    try:
-        response = requests.get(url, stream=True)
-        response.raise_for_status()
-
-        with open(save_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=1024*1024):
-                if chunk:
-                    f.write(chunk)
-
-        # Generate a thumbnail for the downloaded video
-        thumbnail_path = os.path.join(THUMBNAIL_DIR, f"{Path(filename).stem}.jpg")
-        generate_thumbnail(save_path, thumbnail_path)
-
-        return {"message": f"Video '{filename}' downloaded and thumbnail generated successfully."}
-
-    except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=500, detail=f"Failed to download video: {str(e)}")
-
-
-@app.get("/thumbnails/{thumbnail_name}")
-async def get_thumbnail(thumbnail_name: str):
-    """Endpoint to fetch a video thumbnail."""
-    thumbnail_path = os.path.join(THUMBNAIL_DIR, thumbnail_name)
-    if not os.path.isfile(thumbnail_path):
-        raise HTTPException(status_code=404, detail="Thumbnail not found.")
-    return FileResponse(thumbnail_path)
-
-@app.get("/play/{video_name}")
-async def play_video(video_name: str, request: Request):
-    """Render an HTML page to play the video."""
-    video_path = os.path.join(VIDEO_DIR, video_name)
-    if not os.path.isfile(video_path):
-        raise HTTPException(status_code=404, detail="Video not found.")
-    
-    # Determine which template to use based on video format
-    if video_name.endswith(".webm"):
-        template_name = "play_webm.html"  # Template for .webm files
-    else:
-        template_name = "play_other.html"  # Template for other video formats
-
-    return templates.TemplateResponse(
-        template_name,
-        {"request": request, "video_name": video_name}
-    )
-
-
 @app.get("/videos/{video_name}")
-async def stream_video(request: Request, video_name: str, range: str = Header(None)):
-    """Endpoint to stream video files with range support."""
+async def stream_video(video_name: str, range: str = Header(None)):
+    """Stream video files with range support."""
     video_path = os.path.join(VIDEO_DIR, video_name)
-    if not os.path.isfile(video_path):
-        raise HTTPException(status_code=404, detail="Video not found.")
     
+    # Check if the video file exists
+    if not os.path.isfile(video_path):
+        raise HTTPException(status_code=404, detail=f"Video '{video_name}' not found in '{VIDEO_DIR}'.")
+
     file_size = os.path.getsize(video_path)
     start = 0
     end = file_size - 1
@@ -179,6 +102,123 @@ async def stream_video(request: Request, video_name: str, range: str = Header(No
         headers=headers,
         status_code=206  # Partial Content
     )
+
+
+@app.head("/hls/{video_name}/index.m3u8")
+@app.get("/hls/{video_name}/index.m3u8")
+async def serve_hls_playlist(video_name: str):
+    """Serve HLS playlist for .webm files."""
+    hls_output_dir = os.path.join(tempfile.gettempdir(), video_name)
+    hls_playlist = os.path.join(hls_output_dir, "index.m3u8")
+    
+    if os.path.exists(hls_playlist):
+        return FileResponse(hls_playlist, media_type="application/vnd.apple.mpegurl")
+    else:
+        raise HTTPException(status_code=404, detail="Playlist not found") 
+
+def delete_temp_hls_dir(hls_output_dir: str):
+    """Background task to delete HLS directory after use."""
+    shutil.rmtree(hls_output_dir, ignore_errors=True)
+
+def delete_other_hls_dirs(current_hls_dir: str):
+    """Delete all HLS output directories except the current one."""
+    temp_dir = tempfile.gettempdir()
+    for video_name in os.listdir(temp_dir):
+        hls_output_dir = os.path.join(temp_dir, video_name)
+        # Skip the current directory and delete others
+        if os.path.isdir(hls_output_dir) and hls_output_dir != current_hls_dir:
+            shutil.rmtree(hls_output_dir, ignore_errors=True)
+
+@app.get("/play/{video_name}")
+async def play_video(video_name: str, request: Request, background_tasks: BackgroundTasks):
+    """Render an HTML page to play the video."""
+    video_path = os.path.join(VIDEO_DIR, video_name)
+
+    if not os.path.isfile(video_path):
+        raise HTTPException(status_code=404, detail=f"Video '{video_name}' not found in '{VIDEO_DIR}'.")
+
+    # If the video is .webm, convert to HLS
+    if video_name.endswith(".webm"):
+        hls_output_dir = os.path.join(tempfile.gettempdir(), video_name)
+        os.makedirs(hls_output_dir, exist_ok=True)
+
+        hls_playlist = os.path.join(hls_output_dir, "index.m3u8")
+        
+        if not os.path.exists(hls_playlist):
+            ffmpeg_command = [
+                "ffmpeg",
+                "-i", video_path,
+                "-c:v", "h264_nvenc",  # Use 'libx264' if NVENC is not available
+                "-preset", "fast",
+                "-c:a", "aac",
+                "-f", "hls",
+                "-hls_time", "4",
+                "-hls_list_size", "0",
+                "-hls_flags", "delete_segments",
+                "-hls_segment_filename", os.path.join(hls_output_dir, "segment_%03d.ts"),
+                hls_playlist
+            ]
+            subprocess.Popen(ffmpeg_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        # Add background task to delete all other HLS directories except the current one
+        background_tasks.add_task(delete_other_hls_dirs, hls_output_dir)
+
+        # Render the play_hls.html template
+        return templates.TemplateResponse("play_hls.html", {"request": request, "video_name": video_name})
+
+    # If not a .webm file, use a regular video template
+    return templates.TemplateResponse("play_other.html", {"request": request, "video_name": video_name})
+
+@app.post("/rename_video/{video_name}")
+async def rename_video(video_name: str, request: Request):
+    data = await request.json()
+    new_name = data.get("new_name")
+
+    if not new_name:
+        raise HTTPException(status_code=400, detail="New name not provided")
+
+    old_path = os.path.join(VIDEO_DIR, video_name)
+    new_path = os.path.join(VIDEO_DIR, new_name)
+
+    if os.path.exists(old_path):
+        os.rename(old_path, new_path)
+        return {"detail": "Video renamed successfully"}
+    else:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+@app.delete("/delete_video/{video_name}")
+async def delete_video(video_name: str):
+    video_path = os.path.join(VIDEO_DIR, video_name)
+
+    if os.path.exists(video_path):
+        os.remove(video_path)
+        return {"detail": "Video deleted successfully"}
+    else:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+@app.get("/hls/{video_name}/index.m3u8")
+async def serve_hls_playlist(video_name: str):
+    """Serve HLS playlist for .webm files."""
+    hls_output_dir = os.path.join(tempfile.gettempdir(), video_name)
+    hls_playlist = os.path.join(hls_output_dir, "index.m3u8")
+    
+    if os.path.exists(hls_playlist):
+        return FileResponse(hls_playlist, media_type="application/vnd.apple.mpegurl")
+    else:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+
+@app.get("/hls/{video_name}/{segment}")
+async def serve_hls_segment(video_name: str, segment: str):
+    """Serve HLS segments."""
+    hls_output_dir = os.path.join(tempfile.gettempdir(), video_name)
+    segment_path = os.path.join(hls_output_dir, segment)
+    
+    if os.path.exists(segment_path):
+        return FileResponse(segment_path, media_type="video/mp2t")
+    else:
+        raise HTTPException(status_code=404, detail="Segment not found")
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 if __name__ == "__main__":
     import uvicorn

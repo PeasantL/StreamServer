@@ -1,0 +1,81 @@
+<div class="header">
+    <button id="back-button">Go Back</button>
+    <div class="video-actions">
+        <button id="rename-button">Rename</button>
+        <button id="delete-button">Delete</button>
+    </div>
+</div>
+
+<script>
+    // Back button functionality
+    document.getElementById('back-button').onclick = function() {
+        window.history.back();
+    };
+
+    // Rename button functionality
+    document.getElementById('rename-button').onclick = function() {
+        const newName = prompt("Enter new name for the video:");
+        if (newName) {
+            fetch(`/rename_video/{{ video_name }}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ new_name: newName })
+            })
+            .then(response => {
+                if (response.ok) {
+                    alert('Video renamed successfully!');
+                    window.location.href = `/play/${newName}`;
+                } else {
+                    alert('Failed to rename video.');
+                }
+            });
+        }
+    };
+
+    // Delete button functionality
+    document.getElementById('delete-button').onclick = function() {
+        if (confirm("Are you sure you want to delete this video?")) {
+            fetch(`/delete_video/{{ video_name }}`, {
+                method: 'DELETE'
+            })
+            .then(response => {
+                if (response.ok) {
+                    alert('Video deleted successfully!');
+                    window.location.href = '/';
+                } else {
+                    alert('Failed to delete video.');
+                }
+            });
+        }
+    };
+</script>
+
+<style>
+    .header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        width: 100%;
+        padding: 10px;
+        background-color: #1a1a1a; /* Darker grey for the header */
+        color: white;
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        z-index: 1000;
+    }
+    .video-actions button {
+        margin-left: 10px;
+    }
+    button {
+        padding: 8px 16px;
+        background-color: #333;
+        color: white;
+        border: none;
+        cursor: pointer;
+    }
+    button:hover {
+        background-color: #444;
+    }
+</style>

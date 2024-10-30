@@ -4,25 +4,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Video Player</title>
+    <!-- Include base CSS -->
+    <link rel="stylesheet" href="/static/css/base.css">
     <!-- Video.js for other video formats -->
     <link href="https://vjs.zencdn.net/7.11.4/video-js.css" rel="stylesheet" />
     <script src="https://vjs.zencdn.net/7.11.4/video.min.js"></script>
     <style>
-        body {
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            margin: 0;
-            background-color: #191919; /* Set to a dark grey background */
-        }
-        .video-container {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            flex-direction: column;
-        }
         .video-js {
             width: 640px;
             height: 360px;
@@ -30,7 +17,7 @@
     </style>
 </head>
 <body>
-    <!-- Video.js player for other formats -->
+    {% include '_header.html' %}
     <div class="video-container">
         <video id="my-video" class="video-js vjs-default-skin" controls preload="auto" data-setup='{}'>
             <source src="/videos/{{ video_name }}" type="video/mp4">
