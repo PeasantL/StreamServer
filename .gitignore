@@ -1,3 +1,4 @@
 thumbnails
 __pycache__
 .venv
+config.json

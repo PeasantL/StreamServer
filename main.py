@@ -8,6 +8,7 @@ import tempfile
 import subprocess
 import shutil
 import json
+import ffmpeg
 
 app = FastAPI()
 
@@ -27,6 +28,14 @@ def load_config():
     with open(CONFIG_FILE, 'r') as f:
         return json.load(f)
 
+def has_audio_stream(video_path: str) -> bool:
+    """Check if a video file contains an audio stream using FFmpeg."""
+    try:
+        probe = ffmpeg.probe(video_path, select_streams='a')
+        return bool(probe['streams'])
+    except ffmpeg.Error:
+        return False
+
 config = load_config()
 VIDEO_DIR = config.get("video_dir")
 THUMBNAIL_DIR = "thumbnails"
@@ -36,16 +45,49 @@ os.makedirs(THUMBNAIL_DIR, exist_ok=True)
 templates = Jinja2Templates(directory="templates")
 
 def get_video_files():
-    """Fetch all video files in the directory."""
-    return [f for f in os.listdir(VIDEO_DIR) if f.endswith(('.mp4', '.webm', '.mov', '.avi', '.mkv'))]
+    """Fetch all video files in the directory and check if they have audio."""
+    video_files = []
+    for video_name in os.listdir(VIDEO_DIR):
+        if video_name.endswith(('.mp4', '.webm', '.mov', '.avi', '.mkv')):
+            video_path = os.path.join(VIDEO_DIR, video_name)
+            has_audio = has_audio_stream(video_path)
+            video_files.append({"name": video_name, "has_audio": has_audio})
+    return video_files
+
+
+def generate_thumbnail(video_path, thumbnail_path, time="00:00:01"):
+    """Generate a thumbnail using FFmpeg at a specified time."""
+    ffmpeg_command = [
+        "ffmpeg",
+        "-i", video_path,
+        "-ss", time,  # Use the specified time
+        "-vframes", "1",
+        "-vf", "scale=320:-1",  # Resize to width 320px, keeping aspect ratio
+        thumbnail_path
+    ]
+    subprocess.run(ffmpeg_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+@app.on_event("startup")
+async def create_thumbnails_on_startup():
+    """Generate thumbnails for all videos at startup."""
+    video_files = get_video_files()
+    for video_info in video_files:
+        video_name = video_info['name']
+        video_path = os.path.join(VIDEO_DIR, video_name)
+        thumbnail_path = os.path.join(THUMBNAIL_DIR, f"{os.path.splitext(video_name)[0]}.jpg")
+        if not os.path.exists(thumbnail_path):  # Only create if not already present
+            generate_thumbnail(video_path, thumbnail_path)
+
 
 @app.get("/")
 async def list_videos(request: Request):
-    """Root endpoint to list available video files."""
+    """Root endpoint to list available video files with audio info."""
     video_files = get_video_files()
     if not video_files:
         raise HTTPException(status_code=404, detail="No videos found.")
     return templates.TemplateResponse("index.html", {"request": request, "video_files": video_files})
+
 
 @app.get("/videos/{video_name}")
 async def stream_video(video_name: str, range: str = Header(None)):
@@ -174,15 +216,33 @@ async def rename_video(video_name: str, request: Request):
     data = await request.json()
     new_name = data.get("new_name")
 
-    if not new_name:
-        raise HTTPException(status_code=400, detail="New name not provided")
+    # Extract file extension and add it to the new name
+    extension = os.path.splitext(video_name)[1]
+    new_name_with_ext = f"{new_name}{extension}"
 
     old_path = os.path.join(VIDEO_DIR, video_name)
-    new_path = os.path.join(VIDEO_DIR, new_name)
+    new_path = os.path.join(VIDEO_DIR, new_name_with_ext)
 
+    if not new_name:
+        raise HTTPException(status_code=400, detail="New name not provided")
+    
     if os.path.exists(old_path):
-        os.rename(old_path, new_path)
-        return {"detail": "Video renamed successfully"}
+        try:
+            # Rename the video file
+            os.rename(old_path, new_path)
+
+            # Delete the old thumbnail
+            old_thumbnail_path = os.path.join(THUMBNAIL_DIR, f"{os.path.splitext(video_name)[0]}.jpg")
+            if os.path.exists(old_thumbnail_path):
+                os.remove(old_thumbnail_path)
+
+            # Generate a new thumbnail for the renamed video
+            new_thumbnail_path = os.path.join(THUMBNAIL_DIR, f"{os.path.splitext(new_name_with_ext)[0]}.jpg")
+            generate_thumbnail(new_path, new_thumbnail_path)
+
+            return {"detail": "Video renamed and thumbnail updated successfully"}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to rename video: {str(e)}")
     else:
         raise HTTPException(status_code=404, detail="Video not found")
 
@@ -217,6 +277,9 @@ async def serve_hls_segment(video_name: str, segment: str):
         return FileResponse(segment_path, media_type="video/mp2t")
     else:
         raise HTTPException(status_code=404, detail="Segment not found")
+
+# Serve the thumbnails directory as static files
+app.mount("/thumbnails", StaticFiles(directory=THUMBNAIL_DIR), name="thumbnails")
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 

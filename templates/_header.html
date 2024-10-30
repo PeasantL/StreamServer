@@ -1,5 +1,6 @@
 <div class="header">
     <button id="back-button">Go Back</button>
+    <div class="video-title">{{ video_name }}</div>
     <div class="video-actions">
         <button id="rename-button">Rename</button>
         <button id="delete-button">Delete</button>
@@ -14,7 +15,7 @@
 
     // Rename button functionality
     document.getElementById('rename-button').onclick = function() {
-        const newName = prompt("Enter new name for the video:");
+        const newName = prompt("Enter new name for the video (without extension):");
         if (newName) {
             fetch(`/rename_video/{{ video_name }}`, {
                 method: 'POST',
@@ -23,11 +24,19 @@
             })
             .then(response => {
                 if (response.ok) {
-                    alert('Video renamed successfully!');
-                    window.location.href = `/play/${newName}`;
+                    return response.json();  // Parse the response JSON if successful
                 } else {
-                    alert('Failed to rename video.');
+                    throw new Error('Failed to rename video.');
                 }
+            })
+            .then(data => {
+                alert(data.detail);
+                // Redirect to the index page to refresh the video list
+                window.location.href = '/';
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert(error.message);
             });
         }
     };
@@ -64,6 +73,16 @@
         left: 0;
         right: 0;
         z-index: 1000;
+    }
+    .video-title {
+        flex-grow: 1;
+        text-align: center;
+        font-size: 18px;
+        font-weight: bold;
+        margin: 0 20px;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
     }
     .video-actions button {
         margin-left: 10px;

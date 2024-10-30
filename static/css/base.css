@@ -19,3 +19,8 @@ video {
     max-height: 100%;
     outline: none; /* Removes the outline on focus */
 }
+
+html, body {
+    width: 98.5%;
+    position: fixed;  /* Freeze page position */
+}
