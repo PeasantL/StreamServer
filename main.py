@@ -90,6 +90,16 @@ def get_video_files():
             video_files.append({"name": video_name, "has_audio": has_audio})
     return video_files
 
+def get_sibling_folders():
+    """Get a list of sibling folders for navigation."""
+    parent_directory = Path(VIDEO_DIR).parent
+    return [
+        folder.name
+        for folder in parent_directory.iterdir()
+        if folder.is_dir() and folder != Path(VIDEO_DIR)
+    ]
+
+
 # Application Events
 @app.on_event("startup")
 async def create_thumbnails_on_startup():
@@ -114,11 +124,22 @@ async def create_thumbnails_on_startup():
 # Routes
 @app.get("/")
 async def list_videos(request: Request):
-    """Root endpoint to list available video files with audio info."""
+    """Root endpoint to list available video files with audio info and sibling folders."""
     video_files = get_video_files()
+    sibling_folders = get_sibling_folders()  # Get sibling folders
+    
     if not video_files:
         raise HTTPException(status_code=404, detail="No videos found.")
-    return templates.TemplateResponse("index.html", {"request": request, "video_files": video_files})
+    
+    return templates.TemplateResponse(
+        "index.html",
+        {
+            "request": request,
+            "video_files": video_files,
+            "sibling_folders": sibling_folders
+        }
+    )
+
 
 
 @app.get("/videos/{video_name}")
@@ -176,6 +197,32 @@ async def stream_video(video_name: str, range: str = Header(None)):
         headers=headers,
         status_code=206  # Partial Content
     )
+
+class ChangeDirectoryRequest(BaseModel):
+    folder: str
+
+@app.post("/api/change-directory")
+async def change_directory(request: ChangeDirectoryRequest):
+    global VIDEO_DIR  # Declare global at the start of the function
+    new_folder = request.folder
+    
+    # Check if the folder exists as a sibling of the current VIDEO_DIR
+    parent_directory = Path(VIDEO_DIR).parent
+    new_video_dir = parent_directory / new_folder
+    
+    if not new_video_dir.exists() or not new_video_dir.is_dir():
+        raise HTTPException(status_code=404, detail="Folder not found")
+    
+    # Update the config.json file
+    config["video_dir"] = str(new_video_dir)
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(config, f, indent=4)
+    
+    # Reload the VIDEO_DIR setting
+    VIDEO_DIR = config["video_dir"]
+    
+    return {"message": f"Directory changed to {new_folder}"}
+
 
 class DownloadRequest(BaseModel):
     url: str
