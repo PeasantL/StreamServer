@@ -95,9 +95,32 @@
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
+        /* New styles for header */
+        .header {
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        .folder-button {
+            padding: 10px 15px;
+            font-size: 16px;
+            cursor: pointer;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 8px;
+        }
     </style>
 </head>
 <body>
+    <!-- Header for Folder Selection -->
+    <div class="header">
+        {% for folder in sibling_folders %}
+        <button class="folder-button" onclick="selectFolder('{{ folder }}')">{{ folder }}</button>
+        {% endfor %}
+    </div>    
+
     <!-- URL Entry Form and Download Button -->
     <div class="url-form">
         <input type="text" id="videoUrl" class="url-input" placeholder="Enter video URL (webm/mp4)">
@@ -112,7 +135,6 @@
         {% for video in video_files %}
         <div class="video-box" style="background-color: {{ '#001f3f' if not video.has_audio else '#333' }};">
             <a href="/play/{{ video.name }}">
-                <!-- Update the thumbnail source to use _1 or _0 based on audio status -->
                 <img src="/thumbnails/{{ video.name.split('.')[0] }}_{{ '1' if video.has_audio else '0' }}.jpg" 
                      class="thumbnail" alt="{{ video.name }}" />
             </a>
@@ -122,6 +144,29 @@
     </div>    
 
     <script>
+        async function selectFolder(folderName) {
+            try {
+                const response = await fetch('/api/change-directory', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ folder: folderName }),
+                });
+
+                if (response.ok) {
+                    alert(`Changed directory to ${folderName}`);
+                    location.reload();  // Reloads the page to update the video list
+                } else {
+                    const errorData = await response.json();
+                    alert(`Failed to change directory: ${errorData.detail}`);
+                }
+            } catch (error) {
+                console.error('Error changing directory:', error);
+                alert('An error occurred. Please try again.');
+            }
+        }
+
         async function downloadVideo() {
             const videoUrl = document.getElementById('videoUrl').value;
             const downloadButton = document.getElementById('downloadButton');
@@ -150,9 +195,8 @@
                 loadingSpinner.style.display = 'none';
 
                 if (response.ok) {
-                    // Successful download: refresh page to update the video list
                     alert('Video downloaded successfully!');
-                    location.reload();  // Reloads the page to refresh the video list
+                    location.reload();
                 } else {
                     const errorData = await response.json();
                     alert(`Failed to download video: ${errorData.detail}`);
@@ -160,13 +204,10 @@
             } catch (error) {
                 console.error('Error downloading video:', error);
                 alert('An error occurred. Please try again.');
-
-                // Re-enable the download button and hide the loading spinner
                 downloadButton.disabled = false;
                 loadingSpinner.style.display = 'none';
             }
         }
-
     </script>
 </body>
 </html>
