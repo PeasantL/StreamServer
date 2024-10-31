@@ -12,7 +12,6 @@ import json
 import ffmpeg
 import requests
 from pydantic import BaseModel
-import uuid
 
 app = FastAPI()
 
@@ -92,14 +91,23 @@ def get_video_files():
 
 @app.on_event("startup")
 async def create_thumbnails_on_startup():
-    """Generate thumbnails for all videos at startup."""
+    """Generate thumbnails for all videos at startup with audio status suffix."""
     video_files = get_video_files()
     for video_info in video_files:
         video_name = video_info['name']
         video_path = os.path.join(VIDEO_DIR, video_name)
-        thumbnail_path = os.path.join(THUMBNAIL_DIR, f"{os.path.splitext(video_name)[0]}.jpg")
-        if not os.path.exists(thumbnail_path):  # Only create if not already present
-            generate_thumbnail(video_path, thumbnail_path)
+        
+        # Determine if the video has audio
+        has_audio = has_audio_stream(video_path)
+        
+        # Generate the thumbnail path with audio status suffix
+        suffix = "_1" if has_audio else "_0"
+        thumbnail_path = os.path.join(THUMBNAIL_DIR, f"{os.path.splitext(video_name)[0]}{suffix}.jpg")
+        
+        # Only create the thumbnail if it does not already exist
+        if not os.path.exists(thumbnail_path):
+            generate_thumbnail(video_path, os.path.splitext(thumbnail_path)[0], has_audio)
+
 
 
 @app.get("/")
@@ -196,6 +204,23 @@ def delete_other_hls_dirs(current_hls_dir: str):
 class DownloadRequest(BaseModel):
     url: str
 
+class DownloadRequest(BaseModel):
+    url: str
+
+def get_unique_filename(original_filename, directory):
+    """Generate a unique filename by appending a number if a file with the same name exists."""
+    base_name = Path(original_filename).stem
+    extension = Path(original_filename).suffix
+    filename = f"{base_name}{extension}"
+    counter = 1
+    
+    # Check if the file already exists, and increment if necessary
+    while os.path.exists(os.path.join(directory, filename)):
+        filename = f"{base_name}_{counter}{extension}"
+        counter += 1
+    
+    return filename
+
 @app.post("/api/download")
 def download_video(download_request: DownloadRequest):
     url = download_request.url
@@ -203,26 +228,31 @@ def download_video(download_request: DownloadRequest):
         raise HTTPException(status_code=400, detail="Invalid URL or unsupported file format.")
     
     original_filename = url.split("/")[-1]
-    extension = os.path.splitext(original_filename)[1]
-    unique_id = uuid.uuid4().hex
-    filename = f"{Path(original_filename).stem}_{unique_id}{extension}"
+    filename = get_unique_filename(original_filename, VIDEO_DIR)
     save_path = os.path.join(VIDEO_DIR, filename)
 
     try:
+        # Download the video file
         response = requests.get(url, stream=True)
         response.raise_for_status()
         with open(save_path, 'wb') as f:
             for chunk in response.iter_content(chunk_size=1024*1024):
                 if chunk:
                     f.write(chunk)
-        # Generate a thumbnail for the downloaded video
-        thumbnail_path = os.path.join(THUMBNAIL_DIR, f"{Path(filename).stem}.jpg")
-        generate_thumbnail(save_path, thumbnail_path)
+
+        # Check if the downloaded video has audio
+        has_audio = has_audio_stream(save_path)
+        
+        # Generate a thumbnail with "_1" or "_0" suffix based on audio status
+        thumbnail_path_base = os.path.join(THUMBNAIL_DIR, f"{Path(filename).stem}")
+        generate_thumbnail(save_path, thumbnail_path_base, has_audio)
+
         return {"message": f"Video '{filename}' downloaded and thumbnail generated successfully."}
     except requests.exceptions.RequestException as e:
         raise HTTPException(status_code=500, detail=f"Failed to download video: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+
 
 @app.get("/play/{video_name}")
 async def play_video(video_name: str, request: Request, background_tasks: BackgroundTasks):

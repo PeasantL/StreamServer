@@ -111,9 +111,10 @@
     <div class="container" id="videoContainer">
         {% for video in video_files %}
         <div class="video-box" style="background-color: {{ '#001f3f' if not video.has_audio else '#333' }};">
-
             <a href="/play/{{ video.name }}">
-                <img src="/thumbnails/{{ video.name.split('.')[0] }}.jpg" class="thumbnail" alt="{{ video.name }}" />
+                <!-- Update the thumbnail source to use _1 or _0 based on audio status -->
+                <img src="/thumbnails/{{ video.name.split('.')[0] }}_{{ '1' if video.has_audio else '0' }}.jpg" 
+                     class="thumbnail" alt="{{ video.name }}" />
             </a>
             <div class="video-title">{{ video.name }}</div>
         </div>
@@ -125,16 +126,16 @@
             const videoUrl = document.getElementById('videoUrl').value;
             const downloadButton = document.getElementById('downloadButton');
             const loadingSpinner = document.getElementById('loadingSpinner');
-    
+
             if (!videoUrl) {
                 alert('Please enter a video URL.');
                 return;
             }
-    
+
             // Disable download button and show loading spinner
             downloadButton.disabled = true;
             loadingSpinner.style.display = 'block';
-    
+
             try {
                 const response = await fetch('/api/download', {
                     method: 'POST',
@@ -143,14 +144,15 @@
                     },
                     body: JSON.stringify({ url: videoUrl }),
                 });
-    
-                // Re-enable the download button and hide loading spinner
+
+                // Re-enable the download button and hide the loading spinner
                 downloadButton.disabled = false;
                 loadingSpinner.style.display = 'none';
-    
+
                 if (response.ok) {
-                    // Refresh the video list after download completes
-                    await refreshVideoList();
+                    // Successful download: refresh page to update the video list
+                    alert('Video downloaded successfully!');
+                    location.reload();  // Reloads the page to refresh the video list
                 } else {
                     const errorData = await response.json();
                     alert(`Failed to download video: ${errorData.detail}`);
@@ -158,12 +160,13 @@
             } catch (error) {
                 console.error('Error downloading video:', error);
                 alert('An error occurred. Please try again.');
-    
-                // Re-enable the download button and hide loading spinner
+
+                // Re-enable the download button and hide the loading spinner
                 downloadButton.disabled = false;
                 loadingSpinner.style.display = 'none';
             }
         }
+
     </script>
 </body>
 </html>
