@@ -15,7 +15,13 @@ from pydantic import BaseModel
 
 app = FastAPI()
 
-# Add CORS middleware
+# Configuration
+CONFIG_FILE = "config.json"
+THUMBNAIL_DIR = "thumbnails"
+templates = Jinja2Templates(directory="templates")
+
+
+# CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -24,13 +30,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Load configuration from a JSON file
-CONFIG_FILE = "config.json"
 
+# Load JSON Config
 def load_config():
     with open(CONFIG_FILE, 'r') as f:
         return json.load(f)
 
+config = load_config()
+VIDEO_DIR = config.get("video_dir")
+os.makedirs(THUMBNAIL_DIR, exist_ok=True)
+
+
+# Utility functions
 def has_audio_stream(video_path: str) -> bool:
     """Check if a video file contains an audio stream using FFmpeg."""
     try:
@@ -38,14 +49,6 @@ def has_audio_stream(video_path: str) -> bool:
         return bool(probe['streams'])
     except ffmpeg.Error:
         return False
-
-config = load_config()
-VIDEO_DIR = config.get("video_dir")
-THUMBNAIL_DIR = "thumbnails"
-
-os.makedirs(THUMBNAIL_DIR, exist_ok=True)
-
-templates = Jinja2Templates(directory="templates")
 
 def generate_thumbnail(video_path, thumbnail_path_base, has_audio, time="00:00:01"):
     """Generate a thumbnail using FFmpeg with '1' or '0' suffix for audio status."""
@@ -65,7 +68,6 @@ def generate_thumbnail(video_path, thumbnail_path_base, has_audio, time="00:00:0
         subprocess.run(ffmpeg_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     
     return thumbnail_path
-
 
 def get_video_files():
     """Fetch all video files in the directory and check if they have audio based on thumbnail name."""
@@ -88,7 +90,7 @@ def get_video_files():
             video_files.append({"name": video_name, "has_audio": has_audio})
     return video_files
 
-
+# Application Events
 @app.on_event("startup")
 async def create_thumbnails_on_startup():
     """Generate thumbnails for all videos at startup with audio status suffix."""
@@ -109,7 +111,7 @@ async def create_thumbnails_on_startup():
             generate_thumbnail(video_path, os.path.splitext(thumbnail_path)[0], has_audio)
 
 
-
+# Routes
 @app.get("/")
 async def list_videos(request: Request):
     """Root endpoint to list available video files with audio info."""
@@ -174,35 +176,6 @@ async def stream_video(video_name: str, range: str = Header(None)):
         headers=headers,
         status_code=206  # Partial Content
     )
-
-
-@app.head("/hls/{video_name}/index.m3u8")
-@app.get("/hls/{video_name}/index.m3u8")
-async def serve_hls_playlist(video_name: str):
-    """Serve HLS playlist for .webm files."""
-    hls_output_dir = os.path.join(tempfile.gettempdir(), video_name)
-    hls_playlist = os.path.join(hls_output_dir, "index.m3u8")
-    
-    if os.path.exists(hls_playlist):
-        return FileResponse(hls_playlist, media_type="application/vnd.apple.mpegurl")
-    else:
-        raise HTTPException(status_code=404, detail="Playlist not found") 
-
-def delete_temp_hls_dir(hls_output_dir: str):
-    """Background task to delete HLS directory after use."""
-    shutil.rmtree(hls_output_dir, ignore_errors=True)
-
-def delete_other_hls_dirs(current_hls_dir: str):
-    """Delete all HLS output directories except the current one."""
-    temp_dir = tempfile.gettempdir()
-    for video_name in os.listdir(temp_dir):
-        hls_output_dir = os.path.join(temp_dir, video_name)
-        # Skip the current directory and delete others
-        if os.path.isdir(hls_output_dir) and hls_output_dir != current_hls_dir:
-            shutil.rmtree(hls_output_dir, ignore_errors=True)
-
-class DownloadRequest(BaseModel):
-    url: str
 
 class DownloadRequest(BaseModel):
     url: str
@@ -339,6 +312,33 @@ async def delete_video(video_name: str):
     else:
         raise HTTPException(status_code=404, detail="Video not found")
 
+
+# Hls processing
+@app.head("/hls/{video_name}/index.m3u8")
+@app.get("/hls/{video_name}/index.m3u8")
+async def serve_hls_playlist(video_name: str):
+    """Serve HLS playlist for .webm files."""
+    hls_output_dir = os.path.join(tempfile.gettempdir(), video_name)
+    hls_playlist = os.path.join(hls_output_dir, "index.m3u8")
+    
+    if os.path.exists(hls_playlist):
+        return FileResponse(hls_playlist, media_type="application/vnd.apple.mpegurl")
+    else:
+        raise HTTPException(status_code=404, detail="Playlist not found") 
+
+def delete_temp_hls_dir(hls_output_dir: str):
+    """Background task to delete HLS directory after use."""
+    shutil.rmtree(hls_output_dir, ignore_errors=True)
+
+def delete_other_hls_dirs(current_hls_dir: str):
+    """Delete all HLS output directories except the current one."""
+    temp_dir = tempfile.gettempdir()
+    for video_name in os.listdir(temp_dir):
+        hls_output_dir = os.path.join(temp_dir, video_name)
+        # Skip the current directory and delete others
+        if os.path.isdir(hls_output_dir) and hls_output_dir != current_hls_dir:
+            shutil.rmtree(hls_output_dir, ignore_errors=True)
+
 @app.get("/hls/{video_name}/index.m3u8")
 async def serve_hls_playlist(video_name: str):
     """Serve HLS playlist for .webm files."""
@@ -361,10 +361,11 @@ async def serve_hls_segment(video_name: str, segment: str):
     else:
         raise HTTPException(status_code=404, detail="Segment not found")
 
+
 # Serve the thumbnails directory as static files
 app.mount("/thumbnails", StaticFiles(directory=THUMBNAIL_DIR), name="thumbnails")
-
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
 
 if __name__ == "__main__":
     import uvicorn
