@@ -127,16 +127,16 @@
             const videoUrl = document.getElementById('videoUrl').value;
             const downloadButton = document.getElementById('downloadButton');
             const loadingSpinner = document.getElementById('loadingSpinner');
-
+    
             if (!videoUrl) {
                 alert('Please enter a video URL.');
                 return;
             }
-
+    
             // Disable download button and show loading spinner
             downloadButton.disabled = true;
             loadingSpinner.style.display = 'block';
-
+    
             try {
                 const response = await fetch('/api/download', {
                     method: 'POST',
@@ -145,30 +145,26 @@
                     },
                     body: JSON.stringify({ url: videoUrl }),
                 });
-
+    
+                // Re-enable the download button and hide loading spinner
+                downloadButton.disabled = false;
+                loadingSpinner.style.display = 'none';
+    
                 if (response.ok) {
                     // Refresh the video list after download completes
                     await refreshVideoList();
                 } else {
-                    alert('Failed to download video. Please check the URL or try again.');
+                    const errorData = await response.json();
+                    alert(`Failed to download video: ${errorData.detail}`);
                 }
             } catch (error) {
                 console.error('Error downloading video:', error);
                 alert('An error occurred. Please try again.');
-            } finally {
+    
                 // Re-enable the download button and hide loading spinner
                 downloadButton.disabled = false;
                 loadingSpinner.style.display = 'none';
             }
-        }
-
-        async function refreshVideoList() {
-            const response = await fetch('/');
-            const html = await response.text();
-            const parser = new DOMParser();
-            const doc = parser.parseFromString(html, 'text/html');
-            const videoContainer = doc.getElementById('videoContainer');
-            document.getElementById('videoContainer').innerHTML = videoContainer.innerHTML;
         }
     </script>
 </body>

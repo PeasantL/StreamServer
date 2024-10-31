@@ -1,3 +1,4 @@
+from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request, Header, BackgroundTasks
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,6 +10,9 @@ import subprocess
 import shutil
 import json
 import ffmpeg
+import requests
+from pydantic import BaseModel
+import uuid
 
 app = FastAPI()
 
@@ -170,6 +174,37 @@ def delete_other_hls_dirs(current_hls_dir: str):
         # Skip the current directory and delete others
         if os.path.isdir(hls_output_dir) and hls_output_dir != current_hls_dir:
             shutil.rmtree(hls_output_dir, ignore_errors=True)
+
+class DownloadRequest(BaseModel):
+    url: str
+
+@app.post("/api/download")
+def download_video(download_request: DownloadRequest):
+    url = download_request.url
+    if not url or not url.lower().endswith(('.webm', '.mp4')):
+        raise HTTPException(status_code=400, detail="Invalid URL or unsupported file format.")
+    
+    original_filename = url.split("/")[-1]
+    extension = os.path.splitext(original_filename)[1]
+    unique_id = uuid.uuid4().hex
+    filename = f"{Path(original_filename).stem}_{unique_id}{extension}"
+    save_path = os.path.join(VIDEO_DIR, filename)
+
+    try:
+        response = requests.get(url, stream=True)
+        response.raise_for_status()
+        with open(save_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=1024*1024):
+                if chunk:
+                    f.write(chunk)
+        # Generate a thumbnail for the downloaded video
+        thumbnail_path = os.path.join(THUMBNAIL_DIR, f"{Path(filename).stem}.jpg")
+        generate_thumbnail(save_path, thumbnail_path)
+        return {"message": f"Video '{filename}' downloaded and thumbnail generated successfully."}
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=500, detail=f"Failed to download video: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
 
 @app.get("/play/{video_name}")
 async def play_video(video_name: str, request: Request, background_tasks: BackgroundTasks):
