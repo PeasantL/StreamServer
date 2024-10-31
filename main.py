@@ -48,28 +48,46 @@ os.makedirs(THUMBNAIL_DIR, exist_ok=True)
 
 templates = Jinja2Templates(directory="templates")
 
+def generate_thumbnail(video_path, thumbnail_path_base, has_audio, time="00:00:01"):
+    """Generate a thumbnail using FFmpeg with '1' or '0' suffix for audio status."""
+    suffix = "_1" if has_audio else "_0"
+    thumbnail_path = f"{thumbnail_path_base}{suffix}.jpg"
+    
+    # Generate the thumbnail only if it doesn't already exist
+    if not os.path.exists(thumbnail_path):
+        ffmpeg_command = [
+            "ffmpeg",
+            "-i", video_path,
+            "-ss", time,
+            "-vframes", "1",
+            "-vf", "scale=320:-1",
+            thumbnail_path
+        ]
+        subprocess.run(ffmpeg_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    
+    return thumbnail_path
+
+
 def get_video_files():
-    """Fetch all video files in the directory and check if they have audio."""
+    """Fetch all video files in the directory and check if they have audio based on thumbnail name."""
     video_files = []
     for video_name in os.listdir(VIDEO_DIR):
         if video_name.endswith(('.mp4', '.webm', '.mov', '.avi', '.mkv')):
             video_path = os.path.join(VIDEO_DIR, video_name)
-            has_audio = has_audio_stream(video_path)
+            thumbnail_path_base = os.path.join(THUMBNAIL_DIR, os.path.splitext(video_name)[0])
+            
+            # Check for existing thumbnails with audio status
+            if os.path.exists(f"{thumbnail_path_base}_1.jpg"):
+                has_audio = True
+            elif os.path.exists(f"{thumbnail_path_base}_0.jpg"):
+                has_audio = False
+            else:
+                # Probe for audio if no thumbnail exists, then generate and save thumbnail
+                has_audio = has_audio_stream(video_path)
+                generate_thumbnail(video_path, thumbnail_path_base, has_audio)
+                
             video_files.append({"name": video_name, "has_audio": has_audio})
     return video_files
-
-
-def generate_thumbnail(video_path, thumbnail_path, time="00:00:01"):
-    """Generate a thumbnail using FFmpeg at a specified time."""
-    ffmpeg_command = [
-        "ffmpeg",
-        "-i", video_path,
-        "-ss", time,  # Use the specified time
-        "-vframes", "1",
-        "-vf", "scale=320:-1",  # Resize to width 320px, keeping aspect ratio
-        thumbnail_path
-    ]
-    subprocess.run(ffmpeg_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
 @app.on_event("startup")
