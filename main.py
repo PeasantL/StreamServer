@@ -341,7 +341,7 @@ async def play_video(video_name: str, request: Request):
     video_path = os.path.join(VIDEO_DIR, video_name)
     if not os.path.isfile(video_path):
         raise HTTPException(status_code=404, detail=f"Video '{video_name}' not found in '{VIDEO_DIR}'.")
-    return templates.TemplateResponse("play_other.html", {"request": request, "video_name": video_name})
+    return templates.TemplateResponse("play_mp4.html", {"request": request, "video_name": video_name})
 
 @app.post("/rename_video/{video_name}")
 async def rename_video(video_name: str, request: Request):

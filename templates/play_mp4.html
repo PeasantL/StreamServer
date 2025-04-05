@@ -19,7 +19,7 @@
 <body>
     {% include '_header.html' %}
     <div class="video-container">
-        <video id="my-video" class="video-js vjs-default-skin" controls preload="auto" data-setup='{}'>
+        <video id="my-video" class="video-js vjs-default-skin" controls preload="auto" loop data-setup='{}'>
             <source src="/videos/{{ video_name }}" type="video/mp4">
             Your browser does not support the video tag.
         </video>
