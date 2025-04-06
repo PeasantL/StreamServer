@@ -1,6 +1,7 @@
 from pathlib import Path
-from fastapi import FastAPI, HTTPException, Request, Header, BackgroundTasks, Query
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Request, Header, Query
+from ipaddress import ip_address, IPv4Address, IPv6Address
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
@@ -29,6 +30,39 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+def is_ip_allowed(remote_addr: str, allowed_ips: list) -> bool:
+    try:
+        client_ip = ip_address(remote_addr)
+        for allowed_ip in allowed_ips:
+            try:
+                if client_ip == ip_address(allowed_ip):
+                    return True
+            except ValueError:
+                continue
+    except ValueError:
+        pass
+    return False
+
+@app.middleware("http")
+async def whitelist_middleware(request: Request, call_next):
+    allowed_ips = config.get("allowed_ips", [])
+    client_ip = request.headers.get("x-forwarded-for", request.client.host)
+    
+    if client_ip:
+        # Handle multiple IPs in the x-forwarded-for header
+        client_ip = client_ip.split(",")[0].strip()
+    
+    if not is_ip_allowed(client_ip, allowed_ips):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Access denied for IP {client_ip}"
+        )
+    
+    return await call_next(request)
+
+
+app.middleware("http")(whitelist_middleware)
 
 # Load JSON Config
 def load_config():
@@ -429,7 +463,6 @@ async def generate_custom_thumbnail(
 
 # Serve the thumbnails directory as static files
 app.mount("/thumbnails", StaticFiles(directory=THUMBNAIL_DIR), name="thumbnails")
-app.mount("/static", StaticFiles(directory="static"), name="static")
 
 if __name__ == "__main__":
     import uvicorn

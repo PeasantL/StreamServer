@@ -1,3 +1,4 @@
 {
-  "video_dir": "/path/to/your/videos"
+  "video_dir": "/path/to/your/videos",
+  "allowed_ips": ["0.0.0.0", "127.0.0.1", "::1"]
 }
