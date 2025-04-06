@@ -98,12 +98,7 @@ def get_video_files():
             if os.path.exists(f"{thumbnail_path_base}_1.jpg"):
                 has_audio = True
             elif os.path.exists(f"{thumbnail_path_base}_0.jpg"):
-                has_audio = False
-            else:
-                # Probe for audio if no thumbnail exists, then generate and save thumbnail
-                has_audio = has_audio_stream(video_path)
-                generate_thumbnail(video_path, thumbnail_path_base, has_audio)
-                
+                has_audio = False        
             video_files.append({"name": video_name, "has_audio": has_audio})
     return video_files
 
@@ -174,14 +169,17 @@ async def startup_tasks():
     create_thumbnails_on_startup()
 
 def create_thumbnails_on_startup():
-    """Generate thumbnails for all videos at startup with audio status suffix."""
-    video_files = get_video_files()
-    for video_info in video_files:
-        video_name = video_info['name']
-        video_path = os.path.join(VIDEO_DIR, video_name)
-        has_audio = has_audio_stream(video_path)
-        thumbnail_path_base = os.path.join(THUMBNAIL_DIR, os.path.splitext(video_name)[0])
-        generate_thumbnail(video_path, thumbnail_path_base, has_audio)
+    """Generate thumbnails for all videos at startup if they don't exist."""
+    for video_name in os.listdir(VIDEO_DIR):
+        if video_name.endswith(('.mp4', '.webm', '.mov', '.avi', '.mkv')):
+            video_path = os.path.join(VIDEO_DIR, video_name)
+            thumbnail_path_base = os.path.join(THUMBNAIL_DIR, os.path.splitext(video_name)[0])
+            
+            # Only generate if neither thumbnail exists
+            if not (os.path.exists(f"{thumbnail_path_base}_1.jpg") or 
+                   os.path.exists(f"{thumbnail_path_base}_0.jpg")):
+                has_audio = has_audio_stream(video_path)
+                generate_thumbnail(video_path, thumbnail_path_base, has_audio)
 
 # Routes
 @app.get("/")
@@ -423,22 +421,7 @@ async def generate_custom_thumbnail(
         os.remove(os.path.join(THUMBNAIL_DIR, thumbnail))
     
     try:
-        # Modified generate_thumbnail function (ensure it overwrites)
-        def generate_thumbnail(video_path, thumbnail_path_base, has_audio, time="00:00:01", overwrite=False):
-            suffix = "_1" if has_audio else "_0"
-            thumbnail_path = f"{thumbnail_path_base}{suffix}.jpg"
-            ffmpeg_command = [
-                "ffmpeg",
-                "-i", video_path,
-                "-ss", time,
-                "-vframes", "1",
-                "-vf", "scale=320:-1",
-                thumbnail_path
-            ]
-            subprocess.run(ffmpeg_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            return thumbnail_path
-        
-        generate_thumbnail(video_path, thumbnail_base, has_audio, time=time, overwrite=True)
+        generate_thumbnail(video_path, thumbnail_base, has_audio, time=time)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate thumbnail: {str(e)}")
     
