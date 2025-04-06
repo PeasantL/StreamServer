@@ -1,5 +1,5 @@
 from pathlib import Path
-from fastapi import FastAPI, HTTPException, Request, Header, Query
+from fastapi import FastAPI, HTTPException, Request, Header, Query, BackgroundTasks
 from ipaddress import ip_address, IPv4Address, IPv6Address
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 import os
 import tempfile
 import subprocess
+import uuid
 import shutil
 import json
 import ffmpeg
@@ -316,73 +317,93 @@ async def change_directory(request: ChangeDirectoryRequest):
     return {"message": f"Directory changed to {new_folder}"}
 
 
+task_status = {}
+
 class DownloadRequest(BaseModel):
     url: str
 
 @app.post("/api/download")
-def download_video(download_request: DownloadRequest):
+def download_video(download_request: DownloadRequest, background_tasks: BackgroundTasks):
     url = download_request.url
     if not url or not url.lower().endswith(('.webm', '.mp4')):
         raise HTTPException(status_code=400, detail="Invalid URL or unsupported file format.")
     
-    original_filename = url.split("/")[-1]
-    is_webm = url.lower().endswith('.webm')
-    
+    task_id = str(uuid.uuid4())
+    task_status[task_id] = {"status": "in_progress", "progress": 0, "error": None}
+
+    background_tasks.add_task(process_download_task, task_id, url)
+
+    return {"task_id": task_id}
+
+def process_download_task(task_id, url):
     try:
-        if is_webm:
-            # Process WebM conversion
-            original_webm_dir = get_original_webm_dir()
-            os.makedirs(original_webm_dir, exist_ok=True)
-            
-            base_name = Path(original_filename).stem
-            mp4_filename = get_unique_filename(f"{base_name}.mp4", VIDEO_DIR)
-            mp4_path = os.path.join(VIDEO_DIR, mp4_filename)
-            original_webm_path = os.path.join(original_webm_dir, get_unique_filename(original_filename, original_webm_dir))
-            
-            # Download and process in temp directory
-            with tempfile.TemporaryDirectory() as tmp_dir:
-                tmp_webm_path = os.path.join(tmp_dir, original_filename)
-                
-                # Download the WebM
-                response = requests.get(url, stream=True)
-                response.raise_for_status()
-                with open(tmp_webm_path, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=1024*1024):
-                        if chunk:
-                            f.write(chunk)
-                
+        is_webm = url.lower().endswith('.webm')
+        original_filename = url.split("/")[-1]
+
+        # Download
+        task_status[task_id]["status"] = "downloading"
+        task_status[task_id]["progress"] = 0
+        response = requests.get(url, stream=True)
+        response.raise_for_status()
+
+        total_size = int(response.headers.get('content-length', 0))
+        downloaded_size = 0
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_webm_path = os.path.join(tmp_dir, original_filename)
+            with open(tmp_webm_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=1024*1024):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded_size += len(chunk)
+                        task_status[task_id]["progress"] = int((downloaded_size / total_size) * 30)
+
+            if is_webm:
                 # Convert to MP4
+                task_status[task_id]["status"] = "converting"
+                task_status[task_id]["progress"] = 30
+                base_name = Path(original_filename).stem
+                mp4_filename = get_unique_filename(f"{base_name}.mp4", VIDEO_DIR)
+                mp4_path = os.path.join(VIDEO_DIR, mp4_filename)
                 (
                     ffmpeg
                     .input(tmp_webm_path)
                     .output(mp4_path, vcodec='libx264', acodec='aac')
                     .run(capture_stdout=True, capture_stderr=True)
                 )
-                
+                task_status[task_id]["progress"] = 60
+
                 # Move WebM to original directory
+                original_webm_dir = get_original_webm_dir()
+                os.makedirs(original_webm_dir, exist_ok=True)
+                original_webm_path = os.path.join(original_webm_dir, get_unique_filename(original_filename, original_webm_dir))
                 shutil.move(tmp_webm_path, original_webm_path)
-        else:
-            # Direct MP4 download
-            filename = get_unique_filename(original_filename, VIDEO_DIR)
-            save_path = os.path.join(VIDEO_DIR, filename)
-            
-            response = requests.get(url, stream=True)
-            response.raise_for_status()
-            with open(save_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=1024*1024):
-                    if chunk:
-                        f.write(chunk)
-            mp4_path = save_path
-            mp4_filename = filename
+            else:
+                # Direct MP4 download
+                filename = get_unique_filename(original_filename, VIDEO_DIR)
+                save_path = os.path.join(VIDEO_DIR, filename)
+                shutil.move(tmp_webm_path, save_path)
+                mp4_path = save_path
+                mp4_filename = filename
+                task_status[task_id]["progress"] = 60
 
-        # Generate thumbnail
-        has_audio = has_audio_stream(mp4_path)
-        thumbnail_path_base = os.path.join(THUMBNAIL_DIR, Path(mp4_path).stem)
-        generate_thumbnail(mp4_path, thumbnail_path_base, has_audio)
+            # Generate thumbnail
+            task_status[task_id]["status"] = "generating_thumbnail"
+            task_status[task_id]["progress"] = 80
+            has_audio = has_audio_stream(mp4_path)
+            thumbnail_path_base = os.path.join(THUMBNAIL_DIR, Path(mp4_path).stem)
+            generate_thumbnail(mp4_path, thumbnail_path_base, has_audio)
+            task_status[task_id]["progress"] = 100
 
-        return {"message": f"Video '{mp4_filename}' processed successfully."}
+        task_status[task_id]["status"] = "completed"
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+        task_status[task_id]["status"] = "failed"
+        task_status[task_id]["error"] = str(e)
+
+@app.get("/api/task-status/{task_id}")
+def get_task_status(task_id: str):
+    if task_id not in task_status:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task_status[task_id]
 
 @app.get("/play/{video_name}")
 async def play_video(video_name: str, request: Request):
