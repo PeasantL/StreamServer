@@ -4,12 +4,37 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
     <title>MP4 Streaming</title>
-    <!-- Include base CSS -->
-    <link rel="stylesheet" href="/static/css/base.css">
     <!-- Video.js v8 -->
     <link href="https://vjs.zencdn.net/8.21.1/video-js.css" rel="stylesheet" />
     <script src="https://vjs.zencdn.net/8.21.1/video.min.js"></script>
     <style>
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #2b2b2b; /* Dark grey background */
+        }
+
+        .video-container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+        }
+
+        video {
+            max-width: 100%;
+            max-height: 100%;
+            outline: none; /* Removes the outline on focus */
+        }
+
+        html, body {
+            width: 98.5%;
+            position: fixed;  /* Freeze page position */
+        }
+        
         .video-js {
             width: 960px;
             height: 540px;
