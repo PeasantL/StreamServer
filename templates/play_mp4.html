@@ -22,8 +22,8 @@
         <video id="my-video" class="video-js vjs-default-skin" controls preload="auto" loop data-setup='{
             "controlBar": {
                 "skipButtons": {
-                    "forward": 15,
-                    "backward": 15
+                    "forward": 10,
+                    "backward": 10
                 }
             }
         }'>
@@ -33,7 +33,7 @@
     </div>
     <script>
       var player = videojs('my-video');
-
+  
       document.getElementById('thumbnail-button').onclick = async function() {
           // Disable button during processing
           const btn = this;
@@ -42,15 +42,16 @@
           try {
               const currentTime = Math.floor(player.currentTime());
               const timeString = `${String(Math.floor(currentTime/3600)).padStart(2,'0')}:${
-                                String(Math.floor((currentTime%3600)/60)).padStart(2,'0')}:${
-                                String(currentTime%60).padStart(2,'0')}`;
-
+                              String(Math.floor((currentTime%3600)/60)).padStart(2,'0')}:${
+                              String(currentTime%60).padStart(2,'0')}`;
+  
               const response = await fetch(`/generate_thumbnail/{{video_name}}?time=${timeString}`, {
                   method: 'POST'
               });
-
+  
               if (!response.ok) throw new Error(await response.text());
-              setTimeout(() => window.location.reload(), 500); // Delay reload
+              // Redirect to index instead of reloading play page
+              setTimeout(() => window.location.href = "/", 500);
           } catch (error) {
               console.error('Error:', error);
               alert(`Thumbnail failed: ${error.message}`);
@@ -58,6 +59,6 @@
               btn.disabled = false;
           }
       };
-    </script>
+  </script>  
 </body>
 </html>
