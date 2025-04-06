@@ -4,7 +4,7 @@
     <div class="video-actions">
         <button id="rename-button">Rename</button>
         <button id="delete-button">Delete</button>
-        <button id="thumbnail-button">New Thumbnail</button>
+        <button id="thumbnail-button">Thumbnail</button>
     </div>
 </div>
 
@@ -61,41 +61,51 @@
 </script>
 
 <style>
-    .header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        width: 100%;
-        padding: 10px;
-        background-color: #1a1a1a; /* Darker grey for the header */
-        color: white;
-        position: absolute;
-        top: 0;
-        left: 0;
-        right: 0;
-        z-index: 1000;
-    }
-    .video-title {
-        flex-grow: 1;
-        text-align: center;
-        font-size: 18px;
-        font-weight: bold;
-        margin: 0 20px;
-        overflow: hidden;
-        white-space: nowrap;
-        text-overflow: ellipsis;
-    }
-    .video-actions button {
-        margin-left: 10px;
-    }
-    button {
-        padding: 8px 16px;
-        background-color: #333;
-        color: white;
-        border: none;
-        cursor: pointer;
-    }
-    button:hover {
-        background-color: #444;
-    }
+  .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      width: 100%;
+      padding: 10px;
+      background-color: #1a1a1a;
+      color: white;
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 1000;
+  }
+  #back-button {
+      flex: 0 0 auto; /* Don't grow, don't shrink, auto basis */
+      margin-right: 10px;
+  }
+  .video-title {
+      flex: 1 1 auto; /* Grow and shrink as needed */
+      min-width: 0; /* Allows text truncation */
+      text-align: center;
+      font-size: 18px;
+      font-weight: bold;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+  }
+  .video-actions {
+      flex: 0 0 auto; /* Don't grow, don't shrink, auto basis */
+      display: flex;
+      margin-left: 10px;
+  }
+  .video-actions button {
+      margin-left: 10px;
+  }
+  button {
+      padding: 8px 16px;
+      background-color: #333;
+      color: white;
+      border: none;
+      cursor: pointer;
+      white-space: nowrap; /* Prevent button text from wrapping */
+  }
+  button:hover {
+      background-color: #444;
+  }
 </style>
