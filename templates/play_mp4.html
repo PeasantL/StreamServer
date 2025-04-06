@@ -6,9 +6,9 @@
     <title>MP4 Streaming</title>
     <!-- Include base CSS -->
     <link rel="stylesheet" href="/static/css/base.css">
-    <!-- Video.js for other video formats -->
-    <link href="https://vjs.zencdn.net/7.11.4/video-js.css" rel="stylesheet" />
-    <script src="https://vjs.zencdn.net/7.11.4/video.min.js"></script>
+    <!-- Video.js v8 -->
+    <link href="https://vjs.zencdn.net/8.21.1/video-js.css" rel="stylesheet" />
+    <script src="https://vjs.zencdn.net/8.21.1/video.min.js"></script>
     <style>
         .video-js {
             width: 960px;
@@ -19,13 +19,45 @@
 <body>
     {% include '_header.html' %}
     <div class="video-container">
-        <video id="my-video" class="video-js vjs-default-skin" controls preload="auto" loop data-setup='{}'>
+        <video id="my-video" class="video-js vjs-default-skin" controls preload="auto" loop data-setup='{
+            "controlBar": {
+                "skipButtons": {
+                    "forward": 15,
+                    "backward": 15
+                }
+            }
+        }'>
             <source src="/videos/{{ video_name }}" type="video/mp4">
             Your browser does not support the video tag.
         </video>
     </div>
     <script>
-        var player = videojs('my-video');
+      var player = videojs('my-video');
+
+      document.getElementById('thumbnail-button').onclick = async function() {
+          // Disable button during processing
+          const btn = this;
+          btn.disabled = true;
+          
+          try {
+              const currentTime = Math.floor(player.currentTime());
+              const timeString = `${String(Math.floor(currentTime/3600)).padStart(2,'0')}:${
+                                String(Math.floor((currentTime%3600)/60)).padStart(2,'0')}:${
+                                String(currentTime%60).padStart(2,'0')}`;
+
+              const response = await fetch(`/generate_thumbnail/{{video_name}}?time=${timeString}`, {
+                  method: 'POST'
+              });
+
+              if (!response.ok) throw new Error(await response.text());
+              setTimeout(() => window.location.reload(), 500); // Delay reload
+          } catch (error) {
+              console.error('Error:', error);
+              alert(`Thumbnail failed: ${error.message}`);
+          } finally {
+              btn.disabled = false;
+          }
+      };
     </script>
 </body>
 </html>

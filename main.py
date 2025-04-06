@@ -1,5 +1,5 @@
 from pathlib import Path
-from fastapi import FastAPI, HTTPException, Request, Header, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Request, Header, BackgroundTasks, Query
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.templating import Jinja2Templates
@@ -11,6 +11,7 @@ import shutil
 import json
 import ffmpeg
 import requests
+import datetime
 from pydantic import BaseModel
 
 app = FastAPI()
@@ -51,23 +52,39 @@ def has_audio_stream(video_path: str) -> bool:
         return False
 
 def generate_thumbnail(video_path, thumbnail_path_base, has_audio, time="00:00:01"):
-    """Generate a thumbnail using FFmpeg with '1' or '0' suffix for audio status."""
     suffix = "_1" if has_audio else "_0"
     thumbnail_path = f"{thumbnail_path_base}{suffix}.jpg"
     
-    # Generate the thumbnail only if it doesn't already exist
-    if not os.path.exists(thumbnail_path):
-        ffmpeg_command = [
-            "ffmpeg",
-            "-i", video_path,
-            "-ss", time,
-            "-vframes", "1",
-            "-vf", "scale=320:-1",
-            thumbnail_path
-        ]
-        subprocess.run(ffmpeg_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    # Optimized CPU-only FFmpeg command
+    ffmpeg_command = [
+        "ffmpeg",
+        "-ss", time,               # Fast input seeking
+        "-i", video_path,
+        "-vf", "scale='min(320,iw)':-2",  # Smart scaling w/fast algorithm
+        "-frames:v", "1",          # Only capture one frame
+        "-qscale:v", "4",          # Faster JPEG encoding (2-31, lower=faster)
+        "-compression_level", "1", # Fastest compression
+        "-threads", "2",           # Optimal for small operations
+        "-y",                      # Overwrite existing files
+        "-loglevel", "error",      # Suppress non-critical output
+        thumbnail_path
+    ]
+    
+    try:
+        # Timeout after 2 seconds (adjust based on testing)
+        subprocess.run(
+            ffmpeg_command, 
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=2,
+            check=True
+        )
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as e:
+        print(f"Thumbnail generation failed: {str(e)}")
+        return None
     
     return thumbnail_path
+
 
 def get_video_files():
     """Fetch all video files in the directory and check if they have audio based on thumbnail name."""
@@ -169,7 +186,6 @@ def create_thumbnails_on_startup():
 # Routes
 @app.get("/")
 async def list_videos(request: Request):
-    """Root endpoint to list available video files with audio info and sibling folders."""
     video_files = get_video_files()
     sibling_folders = get_sibling_folders()
     
@@ -181,7 +197,8 @@ async def list_videos(request: Request):
         {
             "request": request,
             "video_files": video_files,
-            "sibling_folders": sibling_folders
+            "sibling_folders": sibling_folders,
+            "timestamp": datetime.datetime.now().timestamp()  # Add this line
         }
     )
 
@@ -387,6 +404,45 @@ async def delete_video(video_name: str):
         return {"detail": "Video deleted successfully"}
     else:
         raise HTTPException(status_code=404, detail="Video not found")
+
+@app.post("/generate_thumbnail/{video_name}")
+async def generate_custom_thumbnail(
+    video_name: str, 
+    time: str = Query(default="00:00:01", description="Time in HH:MM:SS format")
+):
+    video_path = os.path.join(VIDEO_DIR, video_name)
+    if not os.path.isfile(video_path):
+        raise HTTPException(status_code=404, detail=f"Video '{video_name}' not found.")
+    
+    has_audio = has_audio_stream(video_path)
+    thumbnail_base = os.path.join(THUMBNAIL_DIR, os.path.splitext(video_name)[0])
+    
+    # Delete existing thumbnails
+    existing_thumbnails = [f for f in os.listdir(THUMBNAIL_DIR) if f.startswith(os.path.basename(thumbnail_base)) and f.endswith(('.jpg'))]
+    for thumbnail in existing_thumbnails:
+        os.remove(os.path.join(THUMBNAIL_DIR, thumbnail))
+    
+    try:
+        # Modified generate_thumbnail function (ensure it overwrites)
+        def generate_thumbnail(video_path, thumbnail_path_base, has_audio, time="00:00:01", overwrite=False):
+            suffix = "_1" if has_audio else "_0"
+            thumbnail_path = f"{thumbnail_path_base}{suffix}.jpg"
+            ffmpeg_command = [
+                "ffmpeg",
+                "-i", video_path,
+                "-ss", time,
+                "-vframes", "1",
+                "-vf", "scale=320:-1",
+                thumbnail_path
+            ]
+            subprocess.run(ffmpeg_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            return thumbnail_path
+        
+        generate_thumbnail(video_path, thumbnail_base, has_audio, time=time, overwrite=True)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate thumbnail: {str(e)}")
+    
+    return {"detail": "Thumbnail successfully updated."}
 
 # Serve the thumbnails directory as static files
 app.mount("/thumbnails", StaticFiles(directory=THUMBNAIL_DIR), name="thumbnails")
