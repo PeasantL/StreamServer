@@ -12,6 +12,7 @@ import ffmpeg
 import requests
 import datetime
 from pydantic import BaseModel
+from typing import List
 
 from middleware import add_cors_middleware, whitelist_middleware
 from utils import *
@@ -19,32 +20,150 @@ from utils import *
 app = FastAPI()
 
 # Configuration
-CONFIG_FILE = "config.json"
 THUMBNAIL_DIR = "thumbnails"
+DB_FILE = "video_db.json"
 
-# Load JSON Config
-def load_config():
-    with open(CONFIG_FILE, 'r') as f:
+# Database functions
+def init_db():
+    """Initialize the database if it doesn't exist."""
+    if not os.path.exists(DB_FILE):
+        with open(DB_FILE, 'w') as f:
+            json.dump({"videos": []}, f)
+
+def load_db():
+    """Load the video database."""
+    if not os.path.exists(DB_FILE):
+        init_db()
+    with open(DB_FILE, 'r') as f:
         return json.load(f)
 
-config = load_config()
-VIDEO_DIR = config.get("video_dir")
+def save_db(db):
+    """Save the database to disk."""
+    with open(DB_FILE, 'w') as f:
+        json.dump(db, f, indent=2)
+
+def get_video_by_id(video_id):
+    """Get a video entry by its ID."""
+    db = load_db()
+    for video in db["videos"]:
+        if video["id"] == video_id:
+            return video
+    return None
+
+def add_video_to_db(video_data):
+    """Add a new video entry to the database."""
+    db = load_db()
+    db["videos"].append(video_data)
+    save_db(db)
+    return video_data
+
+def update_video_in_db(video_id, updated_data):
+    """Update an existing video entry in the database."""
+    db = load_db()
+    for i, video in enumerate(db["videos"]):
+        if video["id"] == video_id:
+            # Update fields
+            for key, value in updated_data.items():
+                db["videos"][i][key] = value
+            save_db(db)
+            return db["videos"][i]
+    return None
+
+def delete_video_from_db(video_id):
+    """Delete a video entry from the database."""
+    db = load_db()
+    for i, video in enumerate(db["videos"]):
+        if video["id"] == video_id:
+            del db["videos"][i]
+            save_db(db)
+            return True
+    return False
+
 os.makedirs(THUMBNAIL_DIR, exist_ok=True)
 
+# Get video files using the database
+def get_video_files():
+    """Get a list of video files from the database."""
+    db = load_db()
+    video_files = []
+    
+    for video in db["videos"]:
+        # Check if the file actually exists
+        video_path = os.path.join(get_video_dir(), video["path"])
+        if os.path.exists(video_path):
+            thumbnail_path = f"/thumbnails/{video['id']}.jpg"
+            thumbnail_exists = os.path.exists(os.path.join(THUMBNAIL_DIR, f"{video['id']}.jpg"))
+            
+            video_files.append({
+                "id": video["id"],
+                "title": video["title"],
+                "path": video["path"],
+                "thumbnail": thumbnail_path if thumbnail_exists else None,
+                "has_thumbnail": thumbnail_exists,
+                "has_audio": video.get("has_audio", True),
+                "creation_date": video.get("creation_date"),
+                "description": video.get("description", ""),
+                "tags": video.get("tags", [])
+            })
+    
+    # Sort by creation date, newest first
+    video_files.sort(key=lambda x: x.get("creation_date", ""), reverse=True)
+    return video_files
 
 templates = Jinja2Templates(directory="templates")
 add_cors_middleware(app)
 app.middleware("http")(whitelist_middleware)
 
-
-
 # Application Events
 @app.on_event("startup")
 async def startup_tasks():
-    """Run startup tasks including WebM conversion and thumbnail generation."""
+    """Run startup tasks including database initialization and thumbnail generation."""
+    init_db()  # Initialize the database if it doesn't exist
+    migrate_existing_videos()  # Migrate existing videos to the database
     process_existing_webm_files()
     create_thumbnails_on_startup()
 
+def migrate_existing_videos():
+    """Migrate existing videos to the database if they're not already there."""
+    db = load_db()
+    # Create a set of paths that are already in the database
+    existing_paths = {video["path"] for video in db["videos"]}
+    
+    for file in os.listdir(get_video_dir()):
+        if file.lower().endswith(('.mp4', '.webm')) and file not in existing_paths:
+            # This video is not in the database, add it
+            video_id = str(uuid.uuid4())
+            creation_time = datetime.datetime.fromtimestamp(
+                os.path.getctime(os.path.join(get_video_dir(), file))
+            ).isoformat()
+            
+            # Check if the video has audio
+            has_audio = has_audio_stream(os.path.join(get_video_dir(), file))
+            
+            # Add to database
+            add_video_to_db({
+                "id": video_id,
+                "original_filename": file,
+                "title": os.path.splitext(file)[0],  # Default title is filename without extension
+                "path": file,
+                "thumbnail_path": f"{video_id}.jpg",
+                "creation_date": creation_time,
+                "description": "",
+                "tags": [],
+                "has_audio": has_audio
+            })
+            
+            # Generate thumbnail if it doesn't exist
+            thumbnail_path = os.path.join(THUMBNAIL_DIR, f"{video_id}.jpg")
+            if not os.path.exists(thumbnail_path):
+                try:
+                    generate_thumbnail(
+                        os.path.join(get_video_dir(), file), 
+                        os.path.join(THUMBNAIL_DIR, video_id),
+                        has_audio
+                    )
+                except Exception as e:
+                    print(f"Error generating thumbnail for {file}: {e}")
 
 # Routes
 @app.get("/")
@@ -61,18 +180,23 @@ async def list_videos(request: Request):
             "request": request,
             "video_files": video_files,
             "sibling_folders": sibling_folders,
-            "timestamp": datetime.datetime.now().timestamp()  # Add this line
+            "timestamp": datetime.datetime.now().timestamp()
         }
     )
 
-@app.get("/videos/{video_name}")
-async def stream_video(video_name: str, range: str = Header(None)):
+@app.get("/videos/{video_id}")
+async def stream_video(video_id: str, range: str = Header(None)):
     """Stream video files with range support."""
-    video_path = os.path.join(VIDEO_DIR, video_name)
+    # Get video info from database
+    video = get_video_by_id(video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail=f"Video with ID '{video_id}' not found.")
+    
+    video_path = os.path.join(get_video_dir(), video["path"])
     
     # Check if the video file exists
     if not os.path.isfile(video_path):
-        raise HTTPException(status_code=404, detail=f"Video '{video_name}' not found in '{VIDEO_DIR}'.")
+        raise HTTPException(status_code=404, detail=f"Video file not found at '{video_path}'.")
 
     file_size = os.path.getsize(video_path)
     start = 0
@@ -92,7 +216,8 @@ async def stream_video(video_name: str, range: str = Header(None)):
 
     # Calculate content length for the response
     content_length = end - start + 1
-    mime_type = "video/mp4" if video_name.endswith(".mp4") else "video/webm"
+    ext = os.path.splitext(video["path"])[1].lower()
+    mime_type = "video/mp4" if ext == ".mp4" else "video/webm"
     headers = {
         "Content-Range": f"bytes {start}-{end}/{file_size}",
         "Accept-Ranges": "bytes",
@@ -126,23 +251,22 @@ class ChangeDirectoryRequest(BaseModel):
 
 @app.post("/api/change-directory")
 async def change_directory(request: ChangeDirectoryRequest):
-    global VIDEO_DIR
     new_folder = request.folder
     
-    # Check if the folder exists as a sibling of the current VIDEO_DIR
-    parent_directory = Path(VIDEO_DIR).parent
+    # Check if the folder exists as a sibling of the current video directory
+    current_video_dir = get_video_dir()
+    parent_directory = Path(current_video_dir).parent
     new_video_dir = parent_directory / new_folder
     
     if not new_video_dir.exists() or not new_video_dir.is_dir():
         raise HTTPException(status_code=404, detail="Folder not found")
     
     # Update the config.json file
+    with open(CONFIG_FILE, 'r') as f:
+        config = json.load(f)
     config["video_dir"] = str(new_video_dir)
     with open(CONFIG_FILE, "w") as f:
         json.dump(config, f, indent=4)
-    
-    # Reload the VIDEO_DIR setting
-    VIDEO_DIR = config["video_dir"]
     
     return {"message": f"Directory changed to {new_folder}"}
 
@@ -187,13 +311,16 @@ def process_download_task(task_id, url):
                         downloaded_size += len(chunk)
                         task_status[task_id]["progress"] = int((downloaded_size / total_size) * 30)
 
+            # Generate a unique ID for the video
+            video_id = str(uuid.uuid4())
+            
             if is_webm:
                 # Convert to MP4
                 task_status[task_id]["status"] = "converting"
                 task_status[task_id]["progress"] = 30
                 base_name = Path(original_filename).stem
-                mp4_filename = get_unique_filename(f"{base_name}.mp4", VIDEO_DIR)
-                mp4_path = os.path.join(VIDEO_DIR, mp4_filename)
+                mp4_filename = f"{video_id}.mp4"  # Use the video ID as filename
+                mp4_path = os.path.join(get_video_dir(), mp4_filename)
                 (
                     ffmpeg
                     .input(tmp_webm_path)
@@ -205,23 +332,44 @@ def process_download_task(task_id, url):
                 # Move WebM to original directory
                 original_webm_dir = get_original_webm_dir()
                 os.makedirs(original_webm_dir, exist_ok=True)
-                original_webm_path = os.path.join(original_webm_dir, get_unique_filename(original_filename, original_webm_dir))
+                original_webm_path = os.path.join(
+                    original_webm_dir, 
+                    f"{video_id}_original.webm"
+                )
                 shutil.move(tmp_webm_path, original_webm_path)
+                
+                # Set path for database
+                saved_path = mp4_filename
             else:
                 # Direct MP4 download
-                filename = get_unique_filename(original_filename, VIDEO_DIR)
-                save_path = os.path.join(VIDEO_DIR, filename)
+                filename = f"{video_id}.mp4"  # Use the video ID as filename
+                save_path = os.path.join(get_video_dir(), filename)
                 shutil.move(tmp_webm_path, save_path)
                 mp4_path = save_path
-                mp4_filename = filename
+                saved_path = filename
                 task_status[task_id]["progress"] = 60
 
             # Generate thumbnail
             task_status[task_id]["status"] = "generating_thumbnail"
             task_status[task_id]["progress"] = 80
             has_audio = has_audio_stream(mp4_path)
-            thumbnail_path_base = os.path.join(THUMBNAIL_DIR, Path(mp4_path).stem)
+            thumbnail_path_base = os.path.join(THUMBNAIL_DIR, video_id)
             generate_thumbnail(mp4_path, thumbnail_path_base, has_audio)
+            task_status[task_id]["progress"] = 90
+            
+            # Add to database
+            creation_time = datetime.datetime.now().isoformat()
+            add_video_to_db({
+                "id": video_id,
+                "original_filename": original_filename,
+                "title": Path(original_filename).stem,  # Default title is original filename w/o extension
+                "path": saved_path,
+                "thumbnail_path": f"{video_id}.jpg",
+                "creation_date": creation_time,
+                "description": "",
+                "tags": [],
+                "has_audio": has_audio
+            })
             task_status[task_id]["progress"] = 100
 
         task_status[task_id]["status"] = "completed"
@@ -235,82 +383,99 @@ def get_task_status(task_id: str):
         raise HTTPException(status_code=404, detail="Task not found")
     return task_status[task_id]
 
-@app.get("/play/{video_name}")
-async def play_video(video_name: str, request: Request):
+@app.get("/play/{video_id}")
+async def play_video(video_id: str, request: Request):
     """Render an HTML page to play the video."""
-    video_path = os.path.join(VIDEO_DIR, video_name)
-    if not os.path.isfile(video_path):
-        raise HTTPException(status_code=404, detail=f"Video '{video_name}' not found in '{VIDEO_DIR}'.")
-    return templates.TemplateResponse("play_mp4.html", {"request": request, "video_name": video_name})
-
-@app.post("/rename_video/{video_name}")
-async def rename_video(video_name: str, request: Request):
-    data = await request.json()
-    new_name = data.get("new_name")
-
-    # Extract file extension and add it to the new name
-    extension = os.path.splitext(video_name)[1]
-    new_name_with_ext = f"{new_name}{extension}"
-
-    old_path = os.path.join(VIDEO_DIR, video_name)
-    new_path = os.path.join(VIDEO_DIR, new_name_with_ext)
-
-    if not new_name:
-        raise HTTPException(status_code=400, detail="New name not provided")
+    video = get_video_by_id(video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail=f"Video with ID '{video_id}' not found.")
     
-    if os.path.exists(old_path):
-        try:
-            # Rename the video file
-            os.rename(old_path, new_path)
+    return templates.TemplateResponse(
+        "play_mp4.html", 
+        {
+            "request": request, 
+            "video_id": video_id,
+            "video_title": video.get("title", "")
+        }
+    )
 
-            # Delete the old thumbnail
-            old_thumbnail_path = os.path.join(THUMBNAIL_DIR, f"{os.path.splitext(video_name)[0]}.jpg")
-            if os.path.exists(old_thumbnail_path):
-                os.remove(old_thumbnail_path)
+class UpdateVideoRequest(BaseModel):
+    title: str
+    description: str = ""
+    tags: List[str] = []
 
-            # Generate a new thumbnail for the renamed video
-            new_thumbnail_path = os.path.join(THUMBNAIL_DIR, f"{os.path.splitext(new_name_with_ext)[0]}.jpg")
-            generate_thumbnail(new_path, new_thumbnail_path)
-
-            return {"detail": "Video renamed and thumbnail updated successfully"}
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to rename video: {str(e)}")
+@app.post("/api/videos/{video_id}/update")
+async def update_video_metadata(video_id: str, request: UpdateVideoRequest):
+    """Update video metadata."""
+    video = get_video_by_id(video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail=f"Video with ID '{video_id}' not found.")
+    
+    update_data = {
+        "title": request.title,
+        "description": request.description,
+        "tags": request.tags
+    }
+    
+    updated_video = update_video_in_db(video_id, update_data)
+    if updated_video:
+        return {"detail": "Video metadata updated successfully", "video": updated_video}
     else:
-        raise HTTPException(status_code=404, detail="Video not found")
+        raise HTTPException(status_code=500, detail="Failed to update video metadata")
 
-@app.delete("/delete_video/{video_name}")
-async def delete_video(video_name: str):
-    video_path = os.path.join(VIDEO_DIR, video_name)
-
+@app.delete("/api/videos/{video_id}")
+async def delete_video(video_id: str):
+    """Delete a video and its thumbnail."""
+    video = get_video_by_id(video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail=f"Video with ID '{video_id}' not found.")
+    
+    # Delete the video file
+    video_path = os.path.join(get_video_dir(), video["path"])
     if os.path.exists(video_path):
         os.remove(video_path)
+    
+    # Delete the thumbnail
+    thumbnail_path = os.path.join(THUMBNAIL_DIR, f"{video_id}.jpg")
+    if os.path.exists(thumbnail_path):
+        os.remove(thumbnail_path)
+    
+    # Remove from database
+    if delete_video_from_db(video_id):
         return {"detail": "Video deleted successfully"}
     else:
-        raise HTTPException(status_code=404, detail="Video not found")
+        raise HTTPException(status_code=500, detail="Failed to delete video from database")
 
-@app.post("/generate_thumbnail/{video_name}")
+@app.post("/api/videos/{video_id}/thumbnail")
 async def generate_custom_thumbnail(
-    video_name: str, 
+    video_id: str, 
     time: str = Query(default="00:00:01", description="Time in HH:MM:SS format")
 ):
-    video_path = os.path.join(VIDEO_DIR, video_name)
-    if not os.path.isfile(video_path):
-        raise HTTPException(status_code=404, detail=f"Video '{video_name}' not found.")
+    """Generate a custom thumbnail for a video at the specified time."""
+    video = get_video_by_id(video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail=f"Video with ID '{video_id}' not found.")
     
-    has_audio = has_audio_stream(video_path)
-    thumbnail_base = os.path.join(THUMBNAIL_DIR, os.path.splitext(video_name)[0])
+    video_path = os.path.join(get_video_dir(), video["path"])
+    if not os.path.isfile(video_path):
+        raise HTTPException(status_code=404, detail=f"Video file not found at '{video_path}'.")
+    
+    has_audio = video.get("has_audio", has_audio_stream(video_path))
+    thumbnail_base = os.path.join(THUMBNAIL_DIR, video_id)
     
     # Delete existing thumbnails
-    existing_thumbnails = [f for f in os.listdir(THUMBNAIL_DIR) if f.startswith(os.path.basename(thumbnail_base)) and f.endswith(('.jpg'))]
+    existing_thumbnails = [
+        f for f in os.listdir(THUMBNAIL_DIR) 
+        if f.startswith(f"{video_id}") and f.endswith(('.jpg'))
+    ]
     for thumbnail in existing_thumbnails:
         os.remove(os.path.join(THUMBNAIL_DIR, thumbnail))
     
     try:
         generate_thumbnail(video_path, thumbnail_base, has_audio, time=time)
+        return {"detail": "Thumbnail successfully updated."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate thumbnail: {str(e)}")
-    
-    return {"detail": "Thumbnail successfully updated."}
 
 # Serve the thumbnails directory as static files
 app.mount("/thumbnails", StaticFiles(directory=THUMBNAIL_DIR), name="thumbnails")

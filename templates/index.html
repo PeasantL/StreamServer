@@ -146,11 +146,11 @@
     <div class="container" id="videoContainer">
         {% for video in video_files %}
         <div class="video-box" style="background-color: {{ '#001f3f' if not video.has_audio else '#333' }};">
-            <a href="/play/{{ video.name }}">
-                <img src="/thumbnails/{{ video.name.split('.')[0] }}_{{ '1' if video.has_audio else '0' }}.jpg?t={{ timestamp }}" 
-                     class="thumbnail" alt="{{ video.name }}" />
+            <a href="/play/{{ video.id }}">
+                <img src="{{ video.thumbnail }}?t={{ timestamp }}" 
+                     class="thumbnail" alt="{{ video.title }}" />
             </a>
-            <div class="video-title">{{ video.name }}</div>
+            <div class="video-title">{{ video.title }}</div>
         </div>
         {% endfor %}
     </div>    

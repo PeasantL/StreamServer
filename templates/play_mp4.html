@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-    <title>MP4 Streaming</title>
+    <title>{{ video_title }} - Streaming</title>
     <style>
         body {
             display: flex;
@@ -43,7 +43,7 @@
     {% include '_header.html' %}
     <div class="video-container">
         <video id="my-video" controls preload="auto" loop>
-            <source src="/videos/{{ video_name }}" type="video/mp4">
+            <source src="/videos/{{ video_id }}" type="video/mp4">
             Your browser does not support the video tag.
         </video>
     </div>
@@ -60,7 +60,7 @@
                               String(Math.floor((currentTime%3600)/60)).padStart(2,'0')}:${
                               String(currentTime%60).padStart(2,'0')}`;
   
-              const response = await fetch(`/generate_thumbnail/{{video_name}}?time=${timeString}`, {
+              const response = await fetch(`/api/videos/{{ video_id }}/thumbnail?time=${timeString}`, {
                   method: 'POST'
               });
   

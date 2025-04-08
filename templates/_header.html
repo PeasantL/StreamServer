@@ -45,7 +45,7 @@
     // Delete button functionality
     document.getElementById('delete-button').onclick = function() {
         if (confirm("Are you sure you want to delete this video?")) {
-            fetch(`/delete_video/{{ video_name }}`, {
+            fetch(`/api/videos/{{ video_id }}`, {
                 method: 'DELETE'
             })
             .then(response => {

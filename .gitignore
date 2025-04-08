@@ -2,3 +2,4 @@ thumbnails
 __pycache__
 .venv
 config.json
+video_db.json
