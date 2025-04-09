@@ -3,6 +3,7 @@ from ipaddress import ip_address
 from fastapi import HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
+from config import config
 
 def is_ip_allowed(remote_addr: str, allowed_ips: list) -> bool:
     try:
@@ -19,16 +20,13 @@ def is_ip_allowed(remote_addr: str, allowed_ips: list) -> bool:
 
 
 async def whitelist_middleware(request: Request, call_next):
-    from main import config  # Import config from main to avoid circular imports
-    
-    allowed_ips = config.get("allowed_ips", [])
     client_ip = request.headers.get("x-forwarded-for", request.client.host)
     
     if client_ip:
         # Handle multiple IPs in the x-forwarded-for header
         client_ip = client_ip.split(",")[0].strip()
     
-    if not is_ip_allowed(client_ip, allowed_ips):
+    if not is_ip_allowed(client_ip, config.allowed_ips):
         raise HTTPException(
             status_code=403,
             detail=f"Access denied for IP {client_ip}"

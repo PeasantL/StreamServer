@@ -2,29 +2,14 @@
 import os
 import subprocess
 import shutil
-import json
 from pathlib import Path
 import ffmpeg
 import uuid
 import datetime
 
-from database import init_db, load_db, save_db
+from database import init_db, load_db, save_db, add_video_to_db
+from config import config
 
-# Configuration
-CONFIG_FILE = "config.json"
-THUMBNAIL_DIR = "thumbnails"
-DB_FILE = "video_db.json"
-
-# Load JSON Config
-def load_config():
-    with open(CONFIG_FILE, 'r') as f:
-        return json.load(f)
-
-# Initialize configuration
-config = load_config()
-os.makedirs(THUMBNAIL_DIR, exist_ok=True)
-
-# Database functions
 
 def has_audio_stream(video_path: str) -> bool:
     """Check if a video file contains an audio stream using FFmpeg."""
@@ -69,16 +54,9 @@ def generate_thumbnail(video_path, thumbnail_path_base, has_audio, time="00:00:0
     
     return thumbnail_path
 
-def get_video_dir():
-    """Get the current video directory from the config file."""
-    with open(CONFIG_FILE, 'r') as f:
-        config = json.load(f)
-    return config.get("video_dir")
-
-
 def get_sibling_folders():
     """Get a list of sibling folders for navigation."""
-    current_video_dir = get_video_dir()
+    current_video_dir = config.video_dir
     parent_directory = Path(current_video_dir).parent
     return [
         folder.name
@@ -88,7 +66,7 @@ def get_sibling_folders():
 
 def get_original_webm_dir():
     """Return the path to the original WebM storage directory."""
-    return os.path.join(get_video_dir(), "original_webm")
+    return os.path.join(config.video_dir, "original_webm")
 
 def process_existing_webm_files():
     """Process existing WebM files and convert them to MP4 format."""
@@ -97,13 +75,13 @@ def process_existing_webm_files():
     original_webm_dir = get_original_webm_dir()
     os.makedirs(original_webm_dir, exist_ok=True)
 
-    for filename in os.listdir(get_video_dir()):
+    for filename in os.listdir(config.video_dir):
         if filename.lower().endswith(".webm"):
-            webm_path = os.path.join(get_video_dir(), filename)
+            webm_path = os.path.join(config.video_dir, filename)
             base_name = os.path.splitext(filename)[0]
             video_id = str(uuid.uuid4())
             mp4_filename = f"{video_id}.mp4"
-            mp4_path = os.path.join(get_video_dir(), mp4_filename)
+            mp4_path = os.path.join(config.video_dir, mp4_filename)
 
             # Check if MP4 already exists
             if os.path.exists(mp4_path):
@@ -143,7 +121,7 @@ def process_existing_webm_files():
                 save_db(db)
                 
                 # Generate thumbnail
-                generate_thumbnail(mp4_path, os.path.join(THUMBNAIL_DIR, video_id), has_audio)
+                generate_thumbnail(mp4_path, os.path.join(config.thumbnail_dir, video_id), has_audio)
                 
             except ffmpeg.Error as e:
                 print(f"Error converting {filename}: {e.stderr.decode()}")
@@ -167,9 +145,79 @@ def create_thumbnails_on_startup():
     db = load_db()
     
     for video in db["videos"]:
-        video_path = os.path.join(get_video_dir(), video["path"])
-        thumbnail_path = os.path.join(THUMBNAIL_DIR, f"{video['id']}.jpg")
+        video_path = os.path.join(config.video_dir, video["path"])
+        thumbnail_path = os.path.join(config.thumbnail_dir, f"{video['id']}.jpg")
         
         if os.path.exists(video_path) and not os.path.exists(thumbnail_path):
             has_audio = video.get("has_audio", has_audio_stream(video_path))
-            generate_thumbnail(video_path, os.path.join(THUMBNAIL_DIR, video["id"]), has_audio)
+            generate_thumbnail(video_path, os.path.join(config.thumbnail_dir, video["id"]), has_audio)
+
+def migrate_existing_videos():
+    """Migrate existing videos to the database if they're not already there."""
+    db = load_db()
+    # Create a set of paths that are already in the database
+    existing_paths = {video["path"] for video in db["videos"]}
+    
+    for file in os.listdir(config.video_dir):
+        if file.lower().endswith(('.mp4', '.webm')) and file not in existing_paths:
+            # This video is not in the database, add it
+            video_id = str(uuid.uuid4())
+            creation_time = datetime.datetime.fromtimestamp(
+                os.path.getctime(os.path.join(config.video_dir, file))
+            ).isoformat()
+            
+            # Check if the video has audio
+            has_audio = has_audio_stream(os.path.join(config.video_dir, file))
+            
+            # Add to database
+            add_video_to_db({
+                "id": video_id,
+                "original_filename": file,
+                "title": os.path.splitext(file)[0],  # Default title is filename without extension
+                "path": file,
+                "thumbnail_path": f"{video_id}.jpg",
+                "creation_date": creation_time,
+                "description": "",
+                "tags": [],
+                "has_audio": has_audio
+            })
+            
+            # Generate thumbnail if it doesn't exist
+            thumbnail_path = os.path.join(config.thumbnail_dir, f"{video_id}.jpg")
+            if not os.path.exists(thumbnail_path):
+                try:
+                    generate_thumbnail(
+                        os.path.join(config.video_dir, file), 
+                        os.path.join(config.thumbnail_dir, video_id),
+                        has_audio
+                    )
+                except Exception as e:
+                    print(f"Error generating thumbnail for {file}: {e}")
+
+def get_video_files():
+    """Get a list of video files from the database."""
+    db = load_db()
+    video_files = []
+    
+    for video in db["videos"]:
+        # Check if the file actually exists
+        video_path = os.path.join(config.video_dir, video["path"])
+        if os.path.exists(video_path):
+            thumbnail_path = f"/thumbnails/{video['id']}.jpg"
+            thumbnail_exists = os.path.exists(os.path.join(config.thumbnail_dir, f"{video['id']}.jpg"))
+            
+            video_files.append({
+                "id": video["id"],
+                "title": video["title"],
+                "path": video["path"],
+                "thumbnail": thumbnail_path if thumbnail_exists else None,
+                "has_thumbnail": thumbnail_exists,
+                "has_audio": video.get("has_audio", True),
+                "creation_date": video.get("creation_date"),
+                "description": video.get("description", ""),
+                "tags": video.get("tags", [])
+            })
+    
+    # Sort by creation date, newest first
+    video_files.sort(key=lambda x: x.get("creation_date", ""), reverse=True)
+    return video_files

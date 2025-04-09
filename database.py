@@ -1,26 +1,26 @@
 import json
 import os
 
+from config import config
 
-DB_FILE = "video_db.json"
 
 # Database functions
 def init_db():
     """Initialize the database if it doesn't exist."""
-    if not os.path.exists(DB_FILE):
-        with open(DB_FILE, 'w') as f:
+    if not os.path.exists(config.db_file):
+        with open(config.db_file, 'w') as f:
             json.dump({"videos": []}, f)
 
 def load_db():
     """Load the video database."""
-    if not os.path.exists(DB_FILE):
+    if not os.path.exists(config.db_file):
         init_db()
-    with open(DB_FILE, 'r') as f:
+    with open(config.db_file, 'r') as f:
         return json.load(f)
 
 def save_db(db):
     """Save the database to disk."""
-    with open(DB_FILE, 'w') as f:
+    with open(config.db_file, 'w') as f:
         json.dump(db, f, indent=2)
 
 def get_video_by_id(video_id):
