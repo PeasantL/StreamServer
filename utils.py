@@ -8,6 +8,8 @@ import ffmpeg
 import uuid
 import datetime
 
+from database import init_db, load_db, save_db
+
 # Configuration
 CONFIG_FILE = "config.json"
 THUMBNAIL_DIR = "thumbnails"
@@ -23,23 +25,6 @@ config = load_config()
 os.makedirs(THUMBNAIL_DIR, exist_ok=True)
 
 # Database functions
-def init_db():
-    """Initialize the database if it doesn't exist."""
-    if not os.path.exists(DB_FILE):
-        with open(DB_FILE, 'w') as f:
-            json.dump({"videos": []}, f)
-
-def load_db():
-    """Load the video database."""
-    if not os.path.exists(DB_FILE):
-        init_db()
-    with open(DB_FILE, 'r') as f:
-        return json.load(f)
-
-def save_db(db):
-    """Save the database to disk."""
-    with open(DB_FILE, 'w') as f:
-        json.dump(db, f, indent=2)
 
 def has_audio_stream(video_path: str) -> bool:
     """Check if a video file contains an audio stream using FFmpeg."""
