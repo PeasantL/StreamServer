@@ -18,10 +18,13 @@
     document.getElementById('rename-button').onclick = function() {
         const newName = prompt("Enter new name for the video (without extension):");
         if (newName) {
-            fetch(`/rename_video/{{ video_name }}`, {
+            fetch(`/api/videos/{{ video_id }}/update`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ new_name: newName })
+                body: JSON.stringify({ title: newName,
+                  description: "",
+                  tags: []
+                 })
             })
             .then(response => {
                 if (response.ok) {
