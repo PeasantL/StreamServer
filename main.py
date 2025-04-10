@@ -132,7 +132,7 @@ async def change_directory(request: ChangeDirectoryRequest):
     if not new_video_dir.exists() or not new_video_dir.is_dir():
         raise HTTPException(status_code=404, detail="Folder not found")
     
-    config.video_dir(new_video_dir)
+    config.video_dir =new_video_dir
     
     return {"message": f"Directory changed to {new_folder}"}
 
