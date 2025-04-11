@@ -8,6 +8,7 @@ import tempfile
 import uuid
 import shutil
 import ffmpeg
+import time
 import requests
 import datetime
 from pydantic import BaseModel
@@ -38,22 +39,27 @@ async def startup_tasks():
 
 # Routes
 @app.get("/")
-async def list_videos(request: Request):
-    video_files = get_video_files()
-    sibling_folders = get_sibling_folders()
+async def index(request: Request):
+    # Get the sort preference, default to "newest"
+    sort_preference = getattr(app.state, "sort_preference", "newest")
     
-    if not video_files:
-        raise HTTPException(status_code=404, detail="No videos found.")
+    # Get sorted video files
+    video_files = get_video_files(sort_by=sort_preference)
+    
+    # Get timestamp for cache busting
+    timestamp = int(time.time())
     
     return templates.TemplateResponse(
-        "index.html",
+        "index.html", 
         {
-            "request": request,
+            "request": request, 
             "video_files": video_files,
-            "sibling_folders": sibling_folders,
-            "timestamp": datetime.datetime.now().timestamp()
+            "timestamp": timestamp,
+            "sibling_folders": get_sibling_folders(),
+            "current_sort": sort_preference  # Pass current sort to template
         }
     )
+
 
 @app.get("/videos/{video_id}")
 async def stream_video(video_id: str, range: str = Header(None)):
@@ -342,6 +348,17 @@ async def generate_custom_thumbnail(
         return {"detail": "Thumbnail successfully updated."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate thumbnail: {str(e)}")
+
+@app.post("/api/sort-videos")
+async def sort_videos(sort_data: dict):
+    sort_by = sort_data.get("sort_by", "newest")
+    if sort_by not in ["title", "newest"]:
+        sort_by = "newest"  # Default to newest if invalid sort parameter
+    
+    # Store the sort preference in session or app state
+    app.state.sort_preference = sort_by
+    
+    return {"status": "success"}
 
 # Serve the thumbnails directory as static files
 app.mount("/thumbnails", StaticFiles(directory=config.thumbnail_dir), name="thumbnails")

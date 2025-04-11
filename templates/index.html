@@ -79,36 +79,9 @@
             border: 2px solid #444;
             border-radius: 8px;
         }
-        .loading-spinner {
-            display: none;
-            border: 6px solid #f3f3f3;
-            border-top: 6px solid #4CAF50;
-            border-radius: 50%;
-            width: 30px;
-            height: 30px;
-            animation: spin 1s linear infinite;
-        }
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-        .status-bar-container {
-            width: 150px;
-            height: 20px;
-            background-color: #ccc;
-            border-radius: 8px;
-            overflow: hidden;
-            display: none;
-            text-align: center;
-        }
-        .status-bar {
-            width: 100%;
-            height: 100%;
-            background-color: #4CAF50;
-            color: white;
-            display: flex;
-            justify-content: center;
-            align-items: center;
+        .download-button:disabled {
+            background-color: #888;
+            cursor: not-allowed;
         }
         /* New styles for header */
         .header {
@@ -126,6 +99,16 @@
             border: none;
             border-radius: 8px;
         }
+        /* Styling for the sort dropdown */
+        .sort-dropdown {
+            padding: 10px;
+            font-size: 16px;
+            border: 2px solid #444;
+            border-radius: 8px;
+            background-color: #333;
+            color: white;
+            cursor: pointer;
+        }
     </style>
 </head>
 <body>
@@ -134,12 +117,15 @@
         {% for folder in sibling_folders %}
         <button class="folder-button" onclick="selectFolder('{{ folder }}')">{{ folder }}</button>
         {% endfor %}
+        
+        <!-- New Sort Dropdown -->
+        <select id="sortDropdown" class="sort-dropdown" onchange="sortVideos(this.value)">
+          <option value="title" {% if current_sort == "title" %}selected{% endif %}>Sort by Title</option>
+          <option value="newest" {% if current_sort == "newest" %}selected{% endif %}>Sort by Newest</option>
+        </select>
+        
         <input type="text" id="videoUrl" class="url-input" placeholder="Enter video URL (webm/mp4)">
         <button id="downloadButton" class="download-button" onclick="downloadVideo()">Download</button>
-        <div id="loadingSpinner" class="loading-spinner"></div>
-        <div id="statusBarContainer" class="status-bar-container">
-          <div id="statusBar" class="status-bar"></div>
-        </div>
     </div>
 
     <!-- Video List -->
@@ -179,100 +165,111 @@
         }
 
         async function downloadVideo() {
-          const videoUrl = document.getElementById('videoUrl').value;
-          const downloadButton = document.getElementById('downloadButton');
-          const loadingSpinner = document.getElementById('loadingSpinner');
-          const statusBarContainer = document.getElementById('statusBarContainer');
-          const statusBar = document.getElementById('statusBar');
+            const videoUrl = document.getElementById('videoUrl').value;
+            const downloadButton = document.getElementById('downloadButton');
 
-          if (!videoUrl) {
-              alert('Please enter a video URL.');
-              return;
-          }
-
-          // Disable download button and show loading spinner
-          downloadButton.disabled = true;
-          loadingSpinner.style.display = 'block';
-
-          try {
-              const response = await fetch('/api/download', {
-                  method: 'POST',
-                  headers: {
-                      'Content-Type': 'application/json',
-                  },
-                  body: JSON.stringify({ url: videoUrl }),
-              });
-
-              if (!response.ok) {
-                  const errorData = await response.json();
-                  throw new Error(errorData.detail);
-              }
-
-              // Get the task ID from the response
-              const taskIdResponse = await response.json();
-              const taskId = taskIdResponse.task_id; // Extract the task ID
-              await pollTaskStatus(taskId, statusBar, statusBarContainer);
-
-              // Re-enable the download button and hide the loading spinner
-              downloadButton.disabled = false;
-              loadingSpinner.style.display = 'none';
-
-              location.reload();
-          } catch (error) {
-              console.error('Error downloading video:', error);
-              alert('An error occurred: ' + error.message);
-              downloadButton.disabled = false;
-              loadingSpinner.style.display = 'none';
-              statusBarContainer.style.display = 'none';
-          }
-      }
-
-
-    async function pollTaskStatus(taskId, statusBar, statusBarContainer) {
-        statusBarContainer.style.display = 'block';
-        while (true) {
-            const response = await fetch(`/api/task-status/${taskId}`);
-            if (!response.ok) {
-                throw new Error('Failed to get task status');
-            }
-            const taskStatus = await response.json();
-            const status = taskStatus.status;
-
-            // sqlStatus will be 'in_progress', 'completed', 'failed'
-            let displayStatus;
-            switch (status) {
-                case 'downloading':
-                    displayStatus = 'Downloading';
-                    break;
-                case 'converting':
-                    displayStatus = 'Converting';
-                    break;
-                case 'generating_thumbnail':
-                    displayStatus = 'Creating Thumbnail';
-                    break;
-                case 'completed':
-                    displayStatus = 'Completed';
-                    break;
-                case 'failed':
-                    displayStatus = 'Failed';
-                    break;
-                default:
-                    displayStatus = status.charAt(0).toUpperCase() + status.slice(1);
+            if (!videoUrl) {
+                alert('Please enter a video URL.');
+                return;
             }
 
-            statusBar.textContent = displayStatus;
+            // Disable download button and change text
+            downloadButton.disabled = true;
+            downloadButton.textContent = 'Starting download...';
 
-            if (status === 'completed') {
-                statusBarContainer.style.display = 'none';
-                break;
-            } else if (status === 'failed') {
-                throw new Error(taskStatus.error);
+            try {
+                const response = await fetch('/api/download', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ url: videoUrl }),
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.detail);
+                }
+
+                // Get the task ID from the response
+                const taskIdResponse = await response.json();
+                const taskId = taskIdResponse.task_id; // Extract the task ID
+                await pollTaskStatus(taskId, downloadButton);
+
+                // Re-enable the download button and restore original text
+                downloadButton.disabled = false;
+                downloadButton.textContent = 'Download';
+
+                location.reload();
+            } catch (error) {
+                console.error('Error downloading video:', error);
+                alert('An error occurred: ' + error.message);
+                downloadButton.disabled = false;
+                downloadButton.textContent = 'Download';
             }
-
-            await new Promise(resolve => setTimeout(resolve, 1000)); // Poll every second
         }
-    }
 
+        async function pollTaskStatus(taskId, downloadButton) {
+            while (true) {
+                const response = await fetch(`/api/task-status/${taskId}`);
+                if (!response.ok) {
+                    throw new Error('Failed to get task status');
+                }
+                const taskStatus = await response.json();
+                const status = taskStatus.status;
+
+                // Update button text based on status
+                switch (status) {
+                    case 'downloading':
+                        downloadButton.textContent = 'Downloading...';
+                        break;
+                    case 'converting':
+                        downloadButton.textContent = 'Converting...';
+                        break;
+                    case 'generating_thumbnail':
+                        downloadButton.textContent = 'Creating Thumbnail...';
+                        break;
+                    case 'completed':
+                        downloadButton.textContent = 'Completed!';
+                        break;
+                    case 'failed':
+                        downloadButton.textContent = 'Failed!';
+                        break;
+                    default:
+                        downloadButton.textContent = status.charAt(0).toUpperCase() + status.slice(1) + '...';
+                }
+
+                if (status === 'completed') {
+                    break;
+                } else if (status === 'failed') {
+                    throw new Error(taskStatus.error);
+                }
+
+                await new Promise(resolve => setTimeout(resolve, 1000)); // Poll every second
+            }
+        }
+
+        async function sortVideos(sortType) {
+            try {
+                const response = await fetch('/api/sort-videos', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ sort_by: sortType }),
+                });
+
+                if (response.ok) {
+                    location.reload();  // Reload page to show sorted videos
+                } else {
+                    const errorData = await response.json();
+                    alert(`Failed to sort videos: ${errorData.detail}`);
+                }
+            } catch (error) {
+                console.error('Error sorting videos:', error);
+                alert('An error occurred while sorting videos. Please try again.');
+            }
+        }
     </script>
 </body>
 </html>
