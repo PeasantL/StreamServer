@@ -195,15 +195,6 @@ def migrate_existing_videos():
                     print(f"Error generating thumbnail for {file}: {e}")
 
 def get_video_files(sort_by="newest"):
-    """
-    Get a list of video files from the database.
-    
-    Args:
-        sort_by (str): How to sort the videos. Options are "title" or "newest" (default).
-    
-    Returns:
-        list: Sorted list of video files
-    """
     db = load_db()
     video_files = []
     
