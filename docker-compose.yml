@@ -1,0 +1,17 @@
+version: '3'
+
+services:
+  video-server:
+    build: .
+    container_name: video-server
+    ports:
+      - "6969:6969"
+    volumes:
+      - ./thumbnails:/app/thumbnails
+      - ./video_db.json:/app/video_db.json
+      - ${PARENT_DIRECTORY}:/videos_parent
+    environment:
+      - VIDEO_DIR=/videos_parent/${VIDEO_FOLDER}
+      - THUMBNAIL_DIR=/app/thumbnails
+      - DB_FILE=/app/video_db.json
+    restart: unless-stopped

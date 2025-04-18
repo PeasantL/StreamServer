@@ -56,13 +56,23 @@ def generate_thumbnail(video_path, thumbnail_path_base, has_audio, time="00:00:0
 
 def get_sibling_folders():
     """Get a list of sibling folders for navigation."""
-    current_video_dir = config.video_dir
-    parent_directory = Path(current_video_dir).parent
-    return [
-        folder.name
-        for folder in parent_directory.iterdir()
-        if folder.is_dir() and str(folder.absolute()) != str(Path(current_video_dir).absolute())
-    ]
+    # Get the parent directory path from the video_dir
+    current_dir = Path(config.video_dir)
+    parent_directory = current_dir.parent
+    current_folder = current_dir.name
+    
+    try:
+        return [
+            folder.name
+            for folder in parent_directory.iterdir()
+            if folder.is_dir() and folder.name != current_folder
+        ]
+    except Exception as e:
+        print(f"Error getting sibling folders: {str(e)}")
+        return []
+
+
+
 
 def get_original_webm_dir():
     """Return the path to the original WebM storage directory."""

@@ -130,17 +130,26 @@ class ChangeDirectoryRequest(BaseModel):
 async def change_directory(request: ChangeDirectoryRequest):
     new_folder = request.folder
     
-    # Check if the folder exists as a sibling of the current video directory
-    current_video_dir = config.video_dir
-    parent_directory = Path(current_video_dir).parent
+    # Get the parent directory
+    current_dir = Path(config.video_dir)
+    parent_directory = current_dir.parent
     new_video_dir = parent_directory / new_folder
     
+    # Check if the folder exists as a sibling of the current video directory
     if not new_video_dir.exists() or not new_video_dir.is_dir():
         raise HTTPException(status_code=404, detail="Folder not found")
     
-    config.video_dir =new_video_dir
+    # Update the video_dir in the config
+    config.video_dir = str(new_video_dir)
+    
+    # Initialize DB for new directory
+    init_db()
+    migrate_existing_videos()
+    process_existing_webm_files()
+    create_thumbnails_on_startup()
     
     return {"message": f"Directory changed to {new_folder}"}
+
 
 
 task_status = {}

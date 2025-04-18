@@ -1,4 +1,5 @@
 import json
+import os
 
 class ConfigManager:
     _instance = None
@@ -9,6 +10,15 @@ class ConfigManager:
             cls._instance.config_file = config_file
             cls._instance._config_data = None
             cls._instance._load_config()
+            
+            # Override with environment variables if they exist
+            if os.environ.get('VIDEO_DIR'):
+                cls._instance._config_data["video_dir"] = os.environ.get('VIDEO_DIR')
+            if os.environ.get('THUMBNAIL_DIR'):
+                cls._instance._config_data["thumbnail_dir"] = os.environ.get('THUMBNAIL_DIR')
+            if os.environ.get('DB_FILE'):
+                cls._instance._config_data["db_file"] = os.environ.get('DB_FILE')
+                
         return cls._instance
     
     def _load_config(self):
@@ -29,6 +39,12 @@ class ConfigManager:
     @property
     def video_dir(self):
         return self._config_data.get("video_dir")
+    
+    # Add to ConfigManager class
+    @property
+    def parent_dir(self):
+        return os.environ.get('PARENT_DIR', os.path.dirname(self.video_dir))
+
 
     @video_dir.setter
     def video_dir(self, value):

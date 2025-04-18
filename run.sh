@@ -1,15 +1,20 @@
 #!/bin/bash
 
-# Check if .venv exists, if not, create it
-if [ ! -d ".venv" ]; then
-    python3 -m venv .venv
-fi
+# Clean up properly first
+echo "Cleaning up previous containers..."
+docker-compose down
 
-# Activate the virtual environment
-source .venv/bin/activate
+# Extract the video_dir from config.json
+VIDEO_DIR=$(grep -o '"video_dir": *"[^"]*"' config.json | cut -d'"' -f4)
 
-# Install requirements
-pip install -r requirements.txt
+# Get parent directory and folder name from VIDEO_DIR
+export PARENT_DIRECTORY=$(dirname "$VIDEO_DIR")
+export VIDEO_FOLDER=$(basename "$VIDEO_DIR")
 
-# Run main.py
-python main.py
+echo "Using parent directory: $PARENT_DIRECTORY"
+echo "Using video folder: $VIDEO_FOLDER"
+
+# Run docker-compose
+docker-compose up -d
+
+echo "Container started. Access the application at http://localhost:6969"
