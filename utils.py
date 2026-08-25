@@ -1,236 +1,359 @@
-# utils.py
-import os
-import subprocess
-import shutil
-from pathlib import Path
-import ffmpeg
-import uuid
+"""Filesystem, ffmpeg and library-scanning helpers.
+
+ffmpeg is driven through ``subprocess`` with an explicit argument list rather
+than through ffmpeg-python: it removes a dependency, and it lets every
+invocation carry a timeout, which the library did not make convenient.
+"""
+
+from __future__ import annotations
+
 import datetime
+import json
+import logging
+import os
+import re
+import shutil
+import subprocess
+import tempfile
+import uuid
+from pathlib import Path
+from typing import Any
 
-from database import init_db, load_db, save_db, add_video_to_db
-from config import config
+from config import settings
+from database import (
+    add_videos_to_db,
+    current_dir,
+    list_videos,
+    prune_missing,
+)
+
+log = logging.getLogger(__name__)
+
+VIDEO_EXTENSIONS = (".mp4", ".webm")
+ORIGINAL_WEBM_DIRNAME = "original_webm"
+TIMECODE_RE = re.compile(r"^\d{1,2}:[0-5]\d:[0-5]\d(\.\d{1,3})?$")
 
 
-def has_audio_stream(video_path: str) -> bool:
-    """Check if a video file contains an audio stream using FFmpeg."""
+class UnsafePathError(ValueError):
+    """A user-supplied path escaped the directory it was meant to stay in."""
+
+
+# --- path safety -------------------------------------------------------------
+
+
+def resolve_within(base: Path, candidate: str | Path) -> Path:
+    """Join *candidate* onto *base* and refuse anything that escapes it.
+
+    Guards two distinct traps: ``Path`` and ``os.path.join`` both discard the
+    left operand when the right one is absolute, and ``..`` segments walk up.
+    """
+    base_resolved = Path(base).resolve()
+    target = (base_resolved / candidate).resolve()
+    if target != base_resolved and base_resolved not in target.parents:
+        raise UnsafePathError(f"{candidate!r} resolves outside {base_resolved}")
+    return target
+
+
+def video_path(video: dict[str, Any]) -> Path:
+    """Absolute on-disk path for a database row, containment-checked."""
+    directory = Path(video.get("directory") or current_dir())
+    return resolve_within(directory, video["path"])
+
+
+def thumbnail_path(video_id: str) -> Path:
+    return resolve_within(settings.thumbnail_dir, f"{video_id}.jpg")
+
+
+def get_original_webm_dir(directory: Path | None = None) -> Path:
+    return Path(directory or current_dir()) / ORIGINAL_WEBM_DIRNAME
+
+
+def get_unique_filename(original_filename: str, directory: Path) -> str:
+    """Append a counter until the name is free in *directory*."""
+    stem = Path(original_filename).stem
+    suffix = Path(original_filename).suffix
+    filename = f"{stem}{suffix}"
+    counter = 1
+    while (Path(directory) / filename).exists():
+        filename = f"{stem}_{counter}{suffix}"
+        counter += 1
+    return filename
+
+
+def get_sibling_folders(directory: Path | None = None) -> list[str]:
+    """Names of the directories offered as switchable libraries."""
+    directory = Path(directory or current_dir())
+    parent = settings.parent_dir
     try:
-        probe = ffmpeg.probe(video_path, select_streams='a')
-        return bool(probe['streams'])
-    except ffmpeg.Error:
-        return False
-
-def generate_thumbnail(video_path, thumbnail_path_base, has_audio, time="00:00:01"):
-    """Generate a thumbnail for a video at the specified time."""
-    # Use simple naming scheme: videoId.jpg
-    thumbnail_path = f"{thumbnail_path_base}.jpg"
-    
-    # Optimized CPU-only FFmpeg command
-    ffmpeg_command = [
-        "ffmpeg",
-        "-ss", time,               # Fast input seeking
-        "-i", video_path,
-        "-vf", "scale='min(320,iw)':-2",  # Smart scaling w/fast algorithm
-        "-frames:v", "1",          # Only capture one frame
-        "-qscale:v", "4",          # Faster JPEG encoding (2-31, lower=faster)
-        "-compression_level", "1", # Fastest compression
-        "-threads", "2",           # Optimal for small operations
-        "-y",                      # Overwrite existing files
-        "-loglevel", "error",      # Suppress non-critical output
-        thumbnail_path
-    ]
-    
-    try:
-        # Timeout after 2 seconds (adjust based on testing)
-        subprocess.run(
-            ffmpeg_command, 
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=2,
-            check=True
+        return sorted(
+            child.name
+            for child in parent.iterdir()
+            if child.is_dir() and child.resolve() != directory.resolve()
         )
-    except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as e:
-        print(f"Thumbnail generation failed: {str(e)}")
-        return None
-    
-    return thumbnail_path
-
-def get_sibling_folders():
-    """Get a list of sibling folders for navigation."""
-    # Get the parent directory path from the video_dir
-    current_dir = Path(config.video_dir)
-    parent_directory = current_dir.parent
-    current_folder = current_dir.name
-    
-    try:
-        return [
-            folder.name
-            for folder in parent_directory.iterdir()
-            if folder.is_dir() and folder.name != current_folder
-        ]
-    except Exception as e:
-        print(f"Error getting sibling folders: {str(e)}")
+    except OSError as exc:
+        log.warning("Cannot list sibling folders of %s: %s", parent, exc)
         return []
 
 
+# --- ffmpeg ------------------------------------------------------------------
 
 
-def get_original_webm_dir():
-    """Return the path to the original WebM storage directory."""
-    return os.path.join(config.video_dir, "original_webm")
+def has_audio_stream(path: Path) -> bool:
+    """True when the file carries at least one audio stream."""
+    command = [
+        "ffprobe",
+        "-v", "error",
+        "-select_streams", "a",
+        "-show_entries", "stream=index",
+        "-of", "json",
+        str(path),
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            timeout=settings.ffmpeg_timeout,
+            check=True,
+        )
+        return bool(json.loads(result.stdout or b"{}").get("streams"))
+    except (subprocess.SubprocessError, json.JSONDecodeError, OSError) as exc:
+        log.warning("ffprobe failed for %s: %s", path, exc)
+        return False
 
-def process_existing_webm_files():
-    """Process existing WebM files and convert them to MP4 format."""
-    init_db()  # Make sure database exists
-    db = load_db()
-    original_webm_dir = get_original_webm_dir()
-    os.makedirs(original_webm_dir, exist_ok=True)
 
-    for filename in os.listdir(config.video_dir):
-        if filename.lower().endswith(".webm"):
-            webm_path = os.path.join(config.video_dir, filename)
-            base_name = os.path.splitext(filename)[0]
-            video_id = str(uuid.uuid4())
-            mp4_filename = f"{video_id}.mp4"
-            mp4_path = os.path.join(config.video_dir, mp4_filename)
+def generate_thumbnail(source: Path, destination: Path, timestamp: str = "00:00:01") -> Path:
+    """Write a JPEG thumbnail for *source* at *timestamp*.
 
-            # Check if MP4 already exists
-            if os.path.exists(mp4_path):
-                unique_name = get_unique_filename(filename, original_webm_dir)
-                shutil.move(webm_path, os.path.join(original_webm_dir, unique_name))
-                continue
+    The frame is rendered to a temporary file and moved into place only on
+    success, so a failure never destroys the thumbnail that was already there.
+    Raises ``subprocess.SubprocessError`` on failure rather than returning None,
+    so callers cannot mistake a failure for success.
+    """
+    if not TIMECODE_RE.match(timestamp):
+        raise ValueError(f"Invalid timecode {timestamp!r}; expected HH:MM:SS")
 
-            # Convert WebM to MP4
-            try:
-                (
-                    ffmpeg
-                    .input(webm_path)
-                    .output(mp4_path, vcodec='libx264', acodec='aac')
-                    .run(capture_stdout=True, capture_stderr=True)
-                )
-                
-                # Move original WebM to archive
-                unique_name = get_unique_filename(filename, original_webm_dir)
-                original_webm_path = os.path.join(original_webm_dir, unique_name)
-                shutil.move(webm_path, original_webm_path)
-                
-                # Check if the video has audio
-                has_audio = has_audio_stream(mp4_path)
-                
-                # Create database entry
-                creation_time = datetime.datetime.now().isoformat()
-                db["videos"].append({
-                    "id": video_id,
-                    "title": base_name,
-                    "path": mp4_filename,
-                    "has_audio": has_audio,
-                    "creation_date": creation_time,
-                    "description": "",
-                    "tags": [],
-                    "original_webm": unique_name
-                })
-                save_db(db)
-                
-                # Generate thumbnail
-                generate_thumbnail(mp4_path, os.path.join(config.thumbnail_dir, video_id), has_audio)
-                
-            except ffmpeg.Error as e:
-                print(f"Error converting {filename}: {e.stderr.decode()}")
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
 
-def get_unique_filename(original_filename, directory):
-    """Generate a unique filename by appending a number if a file with the same name exists."""
-    base_name = Path(original_filename).stem
-    extension = Path(original_filename).suffix
-    filename = f"{base_name}{extension}"
-    counter = 1
-    
-    # Increment counter until filename is unique
-    while os.path.exists(os.path.join(directory, filename)):
-        filename = f"{base_name}_{counter}{extension}"
-        counter += 1
-    
-    return filename
+    # delete=False because ffmpeg writes the file and it is renamed into place.
+    handle = tempfile.NamedTemporaryFile(  # noqa: SIM115
+        dir=destination.parent,
+        prefix=f".{destination.stem}.",
+        suffix=".jpg",
+        delete=False,
+    )
+    handle.close()
+    temp_path = Path(handle.name)
 
-def create_thumbnails_on_startup():
-    """Generate thumbnails for all videos in the database if they don't exist."""
-    db = load_db()
-    
-    for video in db["videos"]:
-        video_path = os.path.join(config.video_dir, video["path"])
-        thumbnail_path = os.path.join(config.thumbnail_dir, f"{video['id']}.jpg")
-        
-        if os.path.exists(video_path) and not os.path.exists(thumbnail_path):
-            has_audio = video.get("has_audio", has_audio_stream(video_path))
-            generate_thumbnail(video_path, os.path.join(config.thumbnail_dir, video["id"]), has_audio)
+    command = [
+        "ffmpeg",
+        "-ss", timestamp,
+        "-i", str(source),
+        "-vf", f"scale='min({settings.thumbnail_width},iw)':-2",
+        "-frames:v", "1",
+        "-qscale:v", "4",
+        "-y",
+        "-loglevel", "error",
+        "-f", "image2",
+        str(temp_path),
+    ]
 
-def migrate_existing_videos():
-    """Migrate existing videos to the database if they're not already there."""
-    db = load_db()
-    # Create a set of paths that are already in the database
-    existing_paths = {video["path"] for video in db["videos"]}
-    
-    for file in os.listdir(config.video_dir):
-        if file.lower().endswith(('.mp4', '.webm')) and file not in existing_paths:
-            # This video is not in the database, add it
-            video_id = str(uuid.uuid4())
-            creation_time = datetime.datetime.fromtimestamp(
-                os.path.getctime(os.path.join(config.video_dir, file))
-            ).isoformat()
-            
-            # Check if the video has audio
-            has_audio = has_audio_stream(os.path.join(config.video_dir, file))
-            
-            # Add to database
-            add_video_to_db({
-                "id": video_id,
-                "original_filename": file,
-                "title": os.path.splitext(file)[0],  # Default title is filename without extension
-                "path": file,
-                "thumbnail_path": f"{video_id}.jpg",
-                "creation_date": creation_time,
-                "description": "",
-                "tags": [],
-                "has_audio": has_audio
-            })
-            
-            # Generate thumbnail if it doesn't exist
-            thumbnail_path = os.path.join(config.thumbnail_dir, f"{video_id}.jpg")
-            if not os.path.exists(thumbnail_path):
-                try:
-                    generate_thumbnail(
-                        os.path.join(config.video_dir, file), 
-                        os.path.join(config.thumbnail_dir, video_id),
-                        has_audio
-                    )
-                except Exception as e:
-                    print(f"Error generating thumbnail for {file}: {e}")
+    try:
+        subprocess.run(
+            command,
+            capture_output=True,
+            timeout=settings.ffmpeg_timeout,
+            check=True,
+        )
+        if not temp_path.exists() or temp_path.stat().st_size == 0:
+            raise subprocess.SubprocessError(
+                f"ffmpeg produced no frame for {source} at {timestamp}"
+            )
+        os.replace(temp_path, destination)
+        return destination
+    except BaseException:
+        temp_path.unlink(missing_ok=True)
+        raise
 
-def get_video_files(sort_by="newest"):
-    db = load_db()
-    video_files = []
-    
-    for video in db["videos"]:
-        # Check if the file actually exists
-        video_path = os.path.join(config.video_dir, video["path"])
-        if os.path.exists(video_path):
-            thumbnail_path = f"/thumbnails/{video['id']}.jpg"
-            thumbnail_exists = os.path.exists(os.path.join(config.thumbnail_dir, f"{video['id']}.jpg"))
-            
-            video_files.append({
-                "id": video["id"],
-                "title": video["title"],
-                "path": video["path"],
-                "thumbnail": thumbnail_path if thumbnail_exists else None,
-                "has_thumbnail": thumbnail_exists,
-                "has_audio": video.get("has_audio", True),
-                "creation_date": video.get("creation_date"),
-                "description": video.get("description", ""),
-                "tags": video.get("tags", [])
-            })
-    
-    # Sort the videos based on the sort_by parameter
+
+def convert_to_mp4(source: Path, destination: Path) -> Path:
+    """Transcode to H.264/AAC, writing to a temp file until it succeeds."""
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = destination.with_name(f".{destination.name}.partial.mp4")
+
+    command = [
+        "ffmpeg",
+        "-i", str(source),
+        "-c:v", "libx264",
+        "-c:a", "aac",
+        "-movflags", "+faststart",
+        "-y",
+        "-loglevel", "error",
+        str(temp_path),
+    ]
+
+    try:
+        subprocess.run(
+            command,
+            capture_output=True,
+            timeout=settings.convert_timeout,
+            check=True,
+        )
+        os.replace(temp_path, destination)
+        return destination
+    except BaseException:
+        temp_path.unlink(missing_ok=True)
+        raise
+
+
+# --- library scanning --------------------------------------------------------
+
+
+def _new_row(directory: Path, filename: str, *, source_name: str | None = None) -> dict[str, Any]:
+    path = Path(directory) / filename
+    video_id = str(uuid.uuid4())
+    created = datetime.datetime.fromtimestamp(path.stat().st_mtime).isoformat()
+    return {
+        "id": video_id,
+        "directory": str(Path(directory).resolve()),
+        "original_filename": source_name or filename,
+        "title": Path(source_name or filename).stem,
+        "path": filename,
+        "thumbnail_path": f"{video_id}.jpg",
+        "creation_date": created,
+        "description": "",
+        "tags": [],
+        "has_audio": has_audio_stream(path),
+        # Recorded so a re-scan can tell that this WebM was already converted.
+        # The previous check compared against a freshly generated UUID and so
+        # could never be true.
+        "source_name": source_name,
+    }
+
+
+def _ensure_thumbnail(video_id: str, source: Path) -> None:
+    destination = thumbnail_path(video_id)
+    if destination.exists():
+        return
+    try:
+        generate_thumbnail(source, destination)
+    except (subprocess.SubprocessError, OSError, ValueError) as exc:
+        log.warning("Thumbnail generation failed for %s: %s", source, exc)
+
+
+def convert_webm_files(directory: Path) -> int:
+    """Transcode loose WebM files to MP4 and archive the originals.
+
+    Runs *before* the MP4 scan so a WebM is never registered under a path that
+    conversion is about to move away.
+    """
+    directory = Path(directory)
+    archive = get_original_webm_dir(directory)
+    converted = 0
+
+    already_converted = {
+        row["source_name"]
+        for row in list_videos(directory)
+        if row.get("source_name") and (directory / row["path"]).exists()
+    }
+
+    for entry in sorted(directory.iterdir()):
+        if not entry.is_file() or entry.suffix.lower() != ".webm":
+            continue
+
+        archive.mkdir(parents=True, exist_ok=True)
+
+        if entry.name in already_converted:
+            # Converted on an earlier run; just move the source out of the way.
+            shutil.move(str(entry), archive / get_unique_filename(entry.name, archive))
+            continue
+
+        mp4_name = f"{uuid.uuid4()}.mp4"
+        try:
+            convert_to_mp4(entry, directory / mp4_name)
+        except (subprocess.SubprocessError, OSError) as exc:
+            log.error("Conversion failed for %s: %s", entry, exc)
+            continue
+
+        row = _new_row(directory, mp4_name, source_name=entry.name)
+        archived = get_unique_filename(entry.name, archive)
+        shutil.move(str(entry), archive / archived)
+        row["original_webm"] = archived
+
+        add_videos_to_db([row])
+        _ensure_thumbnail(row["id"], directory / mp4_name)
+        converted += 1
+
+    return converted
+
+
+def scan_library(directory: Path | None = None) -> dict[str, int]:
+    """Bring the database in line with what is on disk for one directory."""
+    directory = Path(directory or current_dir())
+    if not directory.is_dir():
+        log.warning("Cannot scan %s: not a directory", directory)
+        return {"converted": 0, "added": 0, "pruned": 0}
+
+    converted = convert_webm_files(directory)
+
+    on_disk = {
+        entry.name
+        for entry in directory.iterdir()
+        if entry.is_file() and entry.suffix.lower() in VIDEO_EXTENSIONS
+    }
+    known = {row["path"] for row in list_videos(directory)}
+
+    new_rows = [_new_row(directory, name) for name in sorted(on_disk - known)]
+    add_videos_to_db(new_rows)
+
+    # Rows whose file has gone are removed rather than filtered out on every
+    # read, so they stop accumulating invisibly.
+    pruned = prune_missing(directory, on_disk)
+
+    for row in list_videos(directory):
+        source = directory / row["path"]
+        if source.exists():
+            _ensure_thumbnail(row["id"], source)
+
+    log.info(
+        "Scanned %s: %d converted, %d added, %d pruned",
+        directory, converted, len(new_rows), pruned,
+    )
+    return {"converted": converted, "added": len(new_rows), "pruned": pruned}
+
+
+def get_video_files(sort_by: str = "newest", directory: Path | None = None) -> list[dict[str, Any]]:
+    """Rows for the catalogue view, newest or title-sorted."""
+    directory = Path(directory or current_dir())
+    videos = []
+
+    for row in list_videos(directory):
+        try:
+            source = video_path(row)
+        except UnsafePathError:
+            log.error("Skipping row %s with unsafe path %r", row.get("id"), row.get("path"))
+            continue
+        if not source.exists():
+            continue
+
+        has_thumbnail = thumbnail_path(row["id"]).exists()
+        videos.append(
+            {
+                "id": row["id"],
+                "title": row.get("title") or Path(row["path"]).stem,
+                "path": row["path"],
+                "thumbnail": f"/thumbnails/{row['id']}.jpg" if has_thumbnail else None,
+                "has_thumbnail": has_thumbnail,
+                "has_audio": row.get("has_audio", True),
+                "creation_date": row.get("creation_date") or "",
+                "description": row.get("description", ""),
+                "tags": row.get("tags", []),
+            }
+        )
+
     if sort_by == "title":
-        video_files.sort(key=lambda x: x["title"].lower())  # Case-insensitive sort by title
-    else:  # Default to "newest"
-        video_files.sort(key=lambda x: x.get("creation_date", ""), reverse=True)
-    
-    return video_files
+        videos.sort(key=lambda video: video["title"].lower())
+    else:
+        videos.sort(key=lambda video: video["creation_date"], reverse=True)
+    return videos

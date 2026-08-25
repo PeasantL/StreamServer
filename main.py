@@ -1,377 +1,443 @@
-from pathlib import Path
-from fastapi import FastAPI, HTTPException, Request, Header, Query, BackgroundTasks
-from fastapi.responses import StreamingResponse
-from fastapi.templating import Jinja2Templates
-from fastapi.staticfiles import StaticFiles
-import os
-import tempfile
-import uuid
-import shutil
-import ffmpeg
-import time
-import requests
+"""Video catalogue and streaming server."""
+
+from __future__ import annotations
+
 import datetime
-from pydantic import BaseModel
-from typing import List
+import logging
+import shutil
+import subprocess
+import tempfile
+import threading
+import uuid
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any
 
-from middleware import add_cors_middleware, whitelist_middleware
-from utils import *
-from database import *
-from config import config
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query, Request
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from jinja2 import StrictUndefined
+from pydantic import BaseModel, Field
+
+import database
+import downloads
+import utils
+from config import settings
+from middleware import whitelist_middleware
+from ranges import RangeNotSatisfiable, parse_range
+from tasks import registry
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+)
+log = logging.getLogger("streamserver")
+
+MIME_TYPES = {".mp4": "video/mp4", ".webm": "video/webm"}
+STREAM_CHUNK_SIZE = 1024 * 1024
+
+# Serialises library scans so a directory switch cannot start a second scan
+# while the first is still transcoding.
+_scan_lock = threading.Lock()
 
 
-app = FastAPI()
+def _run_scan(task_id: str, directory: Path) -> None:
+    """Scan a library in a worker thread, reporting through the task registry."""
+    if not _scan_lock.acquire(blocking=False):
+        registry.update(task_id, status="failed", error="A library scan is already running")
+        return
+    try:
+        registry.update(task_id, status="scanning", progress=10)
+        result = utils.scan_library(directory)
+        registry.update(task_id, status="completed", progress=100, error=None)
+        log.info("Scan of %s finished: %s", directory, result)
+    except Exception as exc:  # noqa: BLE001 - surfaced to the client
+        log.exception("Library scan of %s failed", directory)
+        registry.update(task_id, status="failed", error=str(exc))
+    finally:
+        _scan_lock.release()
 
-os.makedirs(config.thumbnail_dir, exist_ok=True)
 
-templates = Jinja2Templates(directory="templates")
-add_cors_middleware(app)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    settings.thumbnail_dir.mkdir(parents=True, exist_ok=True)
+    database.init_db()
+
+    # Transcoding on the event loop would stall every in-flight stream, so the
+    # initial scan runs on a worker thread and the server starts serving now.
+    task_id = registry.create("scan")
+    app.state.startup_scan = task_id
+    threading.Thread(
+        target=_run_scan, args=(task_id, database.current_dir()), daemon=True
+    ).start()
+
+    yield
+
+
+app = FastAPI(title="StreamServer", lifespan=lifespan)
 app.middleware("http")(whitelist_middleware)
 
-# Application Events
-@app.on_event("startup")
-async def startup_tasks():
-    """Run startup tasks including database initialization and thumbnail generation."""
-    init_db()  # Initialize the database if it doesn't exist
-    migrate_existing_videos()  # Migrate existing videos to the database
-    process_existing_webm_files()
-    create_thumbnails_on_startup()
+# No CORS middleware: the UI is served from this same origin, and the previous
+# allow_origins=["*"] with allow_credentials=True let any site a whitelisted
+# user visited call these unauthenticated POST and DELETE routes.
 
-# Routes
-@app.get("/")
-async def index(request: Request):
-    # Get the sort preference, default to "newest"
-    sort_preference = getattr(app.state, "sort_preference", "newest")
-    
-    # Get sorted video files
-    video_files = get_video_files(sort_by=sort_preference)
-    
-    # Get timestamp for cache busting
-    timestamp = int(time.time())
-    
-    return templates.TemplateResponse(
-        "index.html", 
-        {
-            "request": request, 
-            "video_files": video_files,
-            "timestamp": timestamp,
-            "sibling_folders": get_sibling_folders(),
-            "current_sort": sort_preference  # Pass current sort to template
-        }
-    )
+templates = Jinja2Templates(directory="templates")
+# Surfaces a template variable typo as an error instead of rendering an empty
+# string, which is how the player title silently went missing.
+templates.env.undefined = StrictUndefined
 
 
-@app.get("/videos/{video_id}")
-async def stream_video(video_id: str, range: str = Header(None)):
-    """Stream video files with range support."""
-    # Get video info from database
-    video = get_video_by_id(video_id)
+def _get_video_or_404(video_id: str) -> dict[str, Any]:
+    video = database.get_video_by_id(video_id)
     if not video:
         raise HTTPException(status_code=404, detail=f"Video with ID '{video_id}' not found.")
-    
-    video_path = os.path.join(config.video_dir, video["path"])
-    
-    # Check if the video file exists
-    if not os.path.isfile(video_path):
-        raise HTTPException(status_code=404, detail=f"Video file not found at '{video_path}'.")
+    return video
 
-    file_size = os.path.getsize(video_path)
-    start = 0
-    end = file_size - 1
 
-    # Parse the Range header, if present
-    if range:
-        range_str = range.replace("bytes=", "")
-        range_values = range_str.split("-")
-        try:
-            if range_values[0]:
-                start = int(range_values[0])
-            if len(range_values) > 1 and range_values[1]:
-                end = int(range_values[1])
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid Range header")
+def _resolved_video_path(video: dict[str, Any]) -> Path:
+    """Containment-checked path for a row, 404 rather than leaking the reason."""
+    try:
+        path = utils.video_path(video)
+    except utils.UnsafePathError:
+        log.error("Row %s has a path escaping its directory: %r", video["id"], video["path"])
+        raise HTTPException(status_code=404, detail="Video file not found.") from None
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Video file not found.")
+    return path
 
-    # Calculate content length for the response
-    content_length = end - start + 1
-    ext = os.path.splitext(video["path"])[1].lower()
-    mime_type = "video/mp4" if ext == ".mp4" else "video/webm"
-    headers = {
-        "Content-Range": f"bytes {start}-{end}/{file_size}",
-        "Accept-Ranges": "bytes",
-        "Content-Length": str(content_length),
-        "Content-Type": mime_type,
-    }
 
-    def iter_file(path, start, end):
-        """Read and yield file data in chunks."""
-        with open(path, "rb") as f:
-            f.seek(start)
-            remaining = end - start + 1
-            chunk_size = 1024 * 1024  # 1MB chunks
+# --- pages -------------------------------------------------------------------
 
-            while remaining > 0:
-                read_size = min(chunk_size, remaining)
-                data = f.read(read_size)
-                if not data:
-                    break
-                yield data
-                remaining -= len(data)
 
-    return StreamingResponse(
-        iter_file(video_path, start, end),
-        headers=headers,
-        status_code=206  # Partial Content
+@app.get("/")
+async def index(request: Request, sort: str = Query(default="newest")):
+    if sort not in ("title", "newest"):
+        sort = "newest"
+
+    directory = database.current_dir()
+    return templates.TemplateResponse(
+        request,
+        "index.html",
+        {
+            "video_files": utils.get_video_files(sort_by=sort, directory=directory),
+            "timestamp": int(datetime.datetime.now().timestamp()),
+            "sibling_folders": utils.get_sibling_folders(directory),
+            "current_folder": directory.name,
+            "current_sort": sort,
+            "scan_task_id": getattr(app.state, "startup_scan", None),
+        },
     )
 
-class ChangeDirectoryRequest(BaseModel):
-    folder: str
-
-@app.post("/api/change-directory")
-async def change_directory(request: ChangeDirectoryRequest):
-    new_folder = request.folder
-    
-    # Get the parent directory
-    current_dir = Path(config.video_dir)
-    parent_directory = current_dir.parent
-    new_video_dir = parent_directory / new_folder
-    
-    # Check if the folder exists as a sibling of the current video directory
-    if not new_video_dir.exists() or not new_video_dir.is_dir():
-        raise HTTPException(status_code=404, detail="Folder not found")
-    
-    # Update the video_dir in the config
-    config.video_dir = str(new_video_dir)
-    
-    # Initialize DB for new directory
-    init_db()
-    migrate_existing_videos()
-    process_existing_webm_files()
-    create_thumbnails_on_startup()
-    
-    return {"message": f"Directory changed to {new_folder}"}
-
-
-
-task_status = {}
-
-class DownloadRequest(BaseModel):
-    url: str
-
-@app.post("/api/download")
-def download_video(download_request: DownloadRequest, background_tasks: BackgroundTasks):
-    url = download_request.url
-    if not url or not url.lower().endswith(('.webm', '.mp4')):
-        raise HTTPException(status_code=400, detail="Invalid URL or unsupported file format.")
-    
-    task_id = str(uuid.uuid4())
-    task_status[task_id] = {"status": "in_progress", "progress": 0, "error": None}
-
-    background_tasks.add_task(process_download_task, task_id, url)
-
-    return {"task_id": task_id}
-
-def process_download_task(task_id, url):
-    try:
-        is_webm = url.lower().endswith('.webm')
-        original_filename = url.split("/")[-1]
-
-        # Download
-        task_status[task_id]["status"] = "downloading"
-        task_status[task_id]["progress"] = 0
-        response = requests.get(url, stream=True)
-        response.raise_for_status()
-
-        total_size = int(response.headers.get('content-length', 0))
-        downloaded_size = 0
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            tmp_webm_path = os.path.join(tmp_dir, original_filename)
-            with open(tmp_webm_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=1024*1024):
-                    if chunk:
-                        f.write(chunk)
-                        downloaded_size += len(chunk)
-                        task_status[task_id]["progress"] = int((downloaded_size / total_size) * 30)
-
-            # Generate a unique ID for the video
-            video_id = str(uuid.uuid4())
-            
-            if is_webm:
-                # Convert to MP4
-                task_status[task_id]["status"] = "converting"
-                task_status[task_id]["progress"] = 30
-                base_name = Path(original_filename).stem
-                mp4_filename = f"{video_id}.mp4"  # Use the video ID as filename
-                mp4_path = os.path.join(config.video_dir, mp4_filename)
-                (
-                    ffmpeg
-                    .input(tmp_webm_path)
-                    .output(mp4_path, vcodec='libx264', acodec='aac')
-                    .run(capture_stdout=True, capture_stderr=True)
-                )
-                task_status[task_id]["progress"] = 60
-
-                # Move WebM to original directory
-                original_webm_dir = get_original_webm_dir()
-                os.makedirs(original_webm_dir, exist_ok=True)
-                original_webm_path = os.path.join(
-                    original_webm_dir, 
-                    f"{video_id}_original.webm"
-                )
-                shutil.move(tmp_webm_path, original_webm_path)
-                
-                # Set path for database
-                saved_path = mp4_filename
-            else:
-                # Direct MP4 download
-                filename = f"{video_id}.mp4"  # Use the video ID as filename
-                save_path = os.path.join(config.video_dir, filename)
-                shutil.move(tmp_webm_path, save_path)
-                mp4_path = save_path
-                saved_path = filename
-                task_status[task_id]["progress"] = 60
-
-            # Generate thumbnail
-            task_status[task_id]["status"] = "generating_thumbnail"
-            task_status[task_id]["progress"] = 80
-            has_audio = has_audio_stream(mp4_path)
-            thumbnail_path_base = os.path.join(config.thumbnail_dir, video_id)
-            generate_thumbnail(mp4_path, thumbnail_path_base, has_audio)
-            task_status[task_id]["progress"] = 90
-            
-            # Add to database
-            creation_time = datetime.datetime.now().isoformat()
-            add_video_to_db({
-                "id": video_id,
-                "original_filename": original_filename,
-                "title": Path(original_filename).stem,  # Default title is original filename w/o extension
-                "path": saved_path,
-                "thumbnail_path": f"{video_id}.jpg",
-                "creation_date": creation_time,
-                "description": "",
-                "tags": [],
-                "has_audio": has_audio
-            })
-            task_status[task_id]["progress"] = 100
-
-        task_status[task_id]["status"] = "completed"
-    except Exception as e:
-        task_status[task_id]["status"] = "failed"
-        task_status[task_id]["error"] = str(e)
-
-@app.get("/api/task-status/{task_id}")
-def get_task_status(task_id: str):
-    if task_id not in task_status:
-        raise HTTPException(status_code=404, detail="Task not found")
-    return task_status[task_id]
 
 @app.get("/play/{video_id}")
 async def play_video(video_id: str, request: Request):
-    """Render an HTML page to play the video."""
-    video = get_video_by_id(video_id)
-    if not video:
-        raise HTTPException(status_code=404, detail=f"Video with ID '{video_id}' not found.")
-    
+    video = _get_video_or_404(video_id)
     return templates.TemplateResponse(
-        "play_mp4.html", 
+        request,
+        "play_mp4.html",
         {
-            "request": request, 
             "video_id": video_id,
-            "video_title": video.get("title", "")
-        }
+            "video_title": video.get("title", ""),
+        },
     )
 
+
+# --- streaming ---------------------------------------------------------------
+
+
+@app.get("/videos/{video_id}")
+async def stream_video(video_id: str, range: str | None = Header(default=None)):
+    """Serve a video, honouring byte ranges so clients can seek."""
+    video = _get_video_or_404(video_id)
+    path = _resolved_video_path(video)
+
+    file_size = path.stat().st_size
+    mime_type = MIME_TYPES.get(path.suffix.lower(), "application/octet-stream")
+
+    try:
+        byte_range = parse_range(range, file_size)
+    except RangeNotSatisfiable:
+        # RFC 9110 requires the unsatisfied-range form of Content-Range here.
+        return Response(
+            status_code=416,
+            headers={
+                "Content-Range": f"bytes */{file_size}",
+                "Accept-Ranges": "bytes",
+            },
+        )
+
+    if byte_range is None:
+        # No usable Range header: the whole entity, as 200, not a bogus 206.
+        return StreamingResponse(
+            downloads.iter_file_range(path, 0, max(file_size - 1, 0), STREAM_CHUNK_SIZE),
+            status_code=200,
+            headers={
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(file_size),
+                "Content-Type": mime_type,
+            },
+        )
+
+    start, end = byte_range
+    return StreamingResponse(
+        downloads.iter_file_range(path, start, end, STREAM_CHUNK_SIZE),
+        status_code=206,
+        headers={
+            "Content-Range": f"bytes {start}-{end}/{file_size}",
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(end - start + 1),
+            "Content-Type": mime_type,
+        },
+    )
+
+
+# --- library management ------------------------------------------------------
+
+
+class ChangeDirectoryRequest(BaseModel):
+    folder: str = Field(min_length=1, max_length=255)
+
+
+@app.post("/api/change-directory")
+async def change_directory(payload: ChangeDirectoryRequest):
+    """Switch to a sibling library.
+
+    Only names the server itself offered are accepted. Joining an arbitrary
+    string onto the parent path is what let ``{"folder": "/etc"}`` repoint the
+    whole application: both pathlib and os.path.join discard the left operand
+    when the right one is absolute.
+    """
+    directory = database.current_dir()
+    if payload.folder not in utils.get_sibling_folders(directory):
+        raise HTTPException(status_code=404, detail="Folder not found")
+
+    try:
+        target = utils.resolve_within(settings.parent_dir, payload.folder)
+    except utils.UnsafePathError:
+        raise HTTPException(status_code=404, detail="Folder not found") from None
+
+    if not target.is_dir():
+        raise HTTPException(status_code=404, detail="Folder not found")
+
+    database.set_current_dir(target)
+
+    # Scanning can transcode; it must not run on the event loop.
+    task_id = registry.create("scan")
+    app.state.startup_scan = task_id
+    threading.Thread(target=_run_scan, args=(task_id, target), daemon=True).start()
+
+    return {"message": f"Directory changed to {payload.folder}", "task_id": task_id}
+
+
+@app.get("/api/task-status/{task_id}")
+async def get_task_status(task_id: str):
+    task = registry.get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task
+
+
+# --- downloading -------------------------------------------------------------
+
+
+class DownloadRequest(BaseModel):
+    url: str = Field(min_length=1, max_length=2048)
+
+
+@app.post("/api/download")
+async def download_video(payload: DownloadRequest, background_tasks: BackgroundTasks):
+    extension = downloads.url_extension(payload.url)
+    if extension not in downloads.ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail="URL must point at a .mp4 or .webm file.",
+        )
+
+    try:
+        downloads.assert_safe_url(payload.url)
+    except downloads.UnsafeURLError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+    task_id = registry.create("download")
+    background_tasks.add_task(
+        process_download_task, task_id, payload.url, extension, database.current_dir()
+    )
+    return {"task_id": task_id}
+
+
+def process_download_task(task_id: str, url: str, extension: str, directory: Path) -> None:
+    """Fetch, transcode if needed, thumbnail, and register one remote video."""
+    video_id = str(uuid.uuid4())
+    remote_name = downloads.url_filename(url) or f"{video_id}{extension}"
+
+    try:
+        registry.update(task_id, status="downloading", progress=0)
+        response = downloads.open_stream(url)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            # The remote filename is metadata only; the file on disk is named
+            # from our own UUID so a hostile name cannot steer the write.
+            source = Path(tmp_dir) / f"download{extension}"
+
+            def on_progress(fraction: float | None) -> None:
+                if fraction is not None:
+                    registry.update(task_id, progress=int(fraction * 30))
+
+            with response:
+                downloads.stream_to_file(response, source, on_progress)
+
+            mp4_name = f"{video_id}.mp4"
+            destination = directory / mp4_name
+            archived_webm = None
+
+            if extension == ".webm":
+                registry.update(task_id, status="converting", progress=30)
+                utils.convert_to_mp4(source, destination)
+                registry.update(task_id, progress=60)
+
+                archive = utils.get_original_webm_dir(directory)
+                archive.mkdir(parents=True, exist_ok=True)
+                archived_webm = utils.get_unique_filename(f"{video_id}_original.webm", archive)
+                shutil.move(str(source), archive / archived_webm)
+            else:
+                shutil.move(str(source), destination)
+                registry.update(task_id, progress=60)
+
+            registry.update(task_id, status="generating_thumbnail", progress=80)
+            try:
+                utils.generate_thumbnail(destination, utils.thumbnail_path(video_id))
+            except (subprocess.SubprocessError, OSError, ValueError) as exc:
+                # A missing thumbnail is cosmetic; the video is still usable.
+                log.warning("Thumbnail generation failed for %s: %s", destination, exc)
+
+            database.add_video_to_db(
+                {
+                    "id": video_id,
+                    "directory": str(directory.resolve()),
+                    "original_filename": remote_name,
+                    "title": Path(remote_name).stem,
+                    "path": mp4_name,
+                    "thumbnail_path": f"{video_id}.jpg",
+                    "creation_date": datetime.datetime.now().isoformat(),
+                    "description": "",
+                    "tags": [],
+                    "has_audio": utils.has_audio_stream(destination),
+                    "source_name": None,
+                    "original_webm": archived_webm,
+                }
+            )
+
+        registry.update(task_id, status="completed", progress=100)
+    except Exception as exc:  # noqa: BLE001 - reported through the task record
+        log.exception("Download task %s failed", task_id)
+        registry.update(task_id, status="failed", error=str(exc))
+
+
+# --- metadata ----------------------------------------------------------------
+
+
 class UpdateVideoRequest(BaseModel):
-    title: str
-    description: str = ""
-    tags: List[str] = []
+    title: str = Field(min_length=1, max_length=500)
+    description: str = Field(default="", max_length=5000)
+    tags: list[str] = Field(default_factory=list, max_length=50)
+
 
 @app.post("/api/videos/{video_id}/update")
-async def update_video_metadata(video_id: str, request: UpdateVideoRequest):
-    """Update video metadata."""
-    video = get_video_by_id(video_id)
-    if not video:
-        raise HTTPException(status_code=404, detail=f"Video with ID '{video_id}' not found.")
-    
-    update_data = {
-        "title": request.title,
-        "description": request.description,
-        "tags": request.tags
-    }
-    
-    updated_video = update_video_in_db(video_id, update_data)
-    if updated_video:
-        return {"detail": "Video metadata updated successfully", "video": updated_video}
-    else:
+async def update_video_metadata(video_id: str, payload: UpdateVideoRequest):
+    _get_video_or_404(video_id)
+    updated = database.update_video_in_db(
+        video_id,
+        {
+            "title": payload.title,
+            "description": payload.description,
+            "tags": payload.tags,
+        },
+    )
+    if not updated:
         raise HTTPException(status_code=500, detail="Failed to update video metadata")
+    return {"detail": "Video metadata updated successfully", "video": updated}
+
 
 @app.delete("/api/videos/{video_id}")
 async def delete_video(video_id: str):
-    """Delete a video and its thumbnail."""
-    video = get_video_by_id(video_id)
-    if not video:
-        raise HTTPException(status_code=404, detail=f"Video with ID '{video_id}' not found.")
-    
-    # Delete the video file
-    video_path = os.path.join(config.video_dir, video["path"])
-    if os.path.exists(video_path):
-        os.remove(video_path)
-    
-    # Delete the thumbnail
-    thumbnail_path = os.path.join(config.thumbnail_dir, f"{video_id}.jpg")
-    if os.path.exists(thumbnail_path):
-        os.remove(thumbnail_path)
-    
-    # Remove from database
-    if delete_video_from_db(video_id):
-        return {"detail": "Video deleted successfully"}
-    else:
+    """Delete a video, its thumbnail, and any archived original."""
+    video = _get_video_or_404(video_id)
+    directory = Path(video.get("directory") or database.current_dir())
+
+    try:
+        utils.video_path(video).unlink(missing_ok=True)
+    except (utils.UnsafePathError, OSError) as exc:
+        log.warning("Could not remove video file for %s: %s", video_id, exc)
+
+    try:
+        utils.thumbnail_path(video_id).unlink(missing_ok=True)
+    except (utils.UnsafePathError, OSError) as exc:
+        log.warning("Could not remove thumbnail for %s: %s", video_id, exc)
+
+    # The archived WebM is usually the largest file of the three; leaving it
+    # behind meant deletions never actually freed space.
+    archived = video.get("original_webm")
+    if archived:
+        try:
+            utils.resolve_within(utils.get_original_webm_dir(directory), archived).unlink(
+                missing_ok=True
+            )
+        except (utils.UnsafePathError, OSError) as exc:
+            log.warning("Could not remove archived original for %s: %s", video_id, exc)
+
+    if not database.delete_video_from_db(video_id, directory):
         raise HTTPException(status_code=500, detail="Failed to delete video from database")
+    return {"detail": "Video deleted successfully"}
+
 
 @app.post("/api/videos/{video_id}/thumbnail")
 async def generate_custom_thumbnail(
-    video_id: str, 
-    time: str = Query(default="00:00:01", description="Time in HH:MM:SS format")
+    video_id: str,
+    time: str = Query(default="00:00:01", description="Time in HH:MM:SS format"),
 ):
-    """Generate a custom thumbnail for a video at the specified time."""
-    video = get_video_by_id(video_id)
-    if not video:
-        raise HTTPException(status_code=404, detail=f"Video with ID '{video_id}' not found.")
-    
-    video_path = os.path.join(config.video_dir, video["path"])
-    if not os.path.isfile(video_path):
-        raise HTTPException(status_code=404, detail=f"Video file not found at '{video_path}'.")
-    
-    has_audio = video.get("has_audio", has_audio_stream(video_path))
-    thumbnail_base = os.path.join(config.thumbnail_dir, video_id)
-    
-    # Delete existing thumbnails
-    existing_thumbnails = [
-        f for f in os.listdir(config.thumbnail_dir) 
-        if f.startswith(f"{video_id}") and f.endswith(('.jpg'))
-    ]
-    for thumbnail in existing_thumbnails:
-        os.remove(os.path.join(config.thumbnail_dir, thumbnail))
-    
+    """Regenerate a thumbnail from the frame at *time*."""
+    video = _get_video_or_404(video_id)
+    path = _resolved_video_path(video)
+
     try:
-        generate_thumbnail(video_path, thumbnail_base, has_audio, time=time)
-        return {"detail": "Thumbnail successfully updated."}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to generate thumbnail: {str(e)}")
+        # generate_thumbnail writes to a temp file and only replaces the
+        # existing thumbnail once ffmpeg has actually produced a frame.
+        utils.generate_thumbnail(path, utils.thumbnail_path(video_id), timestamp=time)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except (subprocess.SubprocessError, OSError) as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to generate thumbnail: {exc}"
+        ) from None
 
-@app.post("/api/sort-videos")
-async def sort_videos(sort_data: dict):
-    sort_by = sort_data.get("sort_by", "newest")
-    if sort_by not in ["title", "newest"]:
-        sort_by = "newest"  # Default to newest if invalid sort parameter
-    
-    # Store the sort preference in session or app state
-    app.state.sort_preference = sort_by
-    
-    return {"status": "success"}
+    return {"detail": "Thumbnail successfully updated."}
 
-# Serve the thumbnails directory as static files
-app.mount("/thumbnails", StaticFiles(directory=config.thumbnail_dir), name="thumbnails")
+
+@app.get("/healthz")
+async def healthz():
+    return JSONResponse({"status": "ok"})
+
+
+settings.thumbnail_dir.mkdir(parents=True, exist_ok=True)
+app.mount(
+    "/thumbnails",
+    StaticFiles(directory=str(settings.thumbnail_dir)),
+    name="thumbnails",
+)
+
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=6969)
+
+    uvicorn.run(
+        app,
+        host=settings.host,
+        port=settings.port,
+        # uvicorn ships its own proxy-header middleware, enabled by default and
+        # trusting 127.0.0.1, which rewrites scope["client"] from
+        # X-Forwarded-For before any application middleware runs. Turning it off
+        # keeps forwarded-header policy in one place: middleware.client_ip,
+        # which honours the header only for configured trusted_proxies.
+        proxy_headers=False,
+    )

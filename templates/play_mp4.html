@@ -5,75 +5,72 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
     <title>{{ video_title }} - Streaming</title>
     <style>
+        html, body {
+            margin: 0;
+            height: 100%;
+            background-color: #2b2b2b;
+        }
         body {
             display: flex;
             justify-content: center;
             align-items: center;
-            height: 100vh;
-            margin: 0;
-            background-color: #2b2b2b; /* Dark grey background */
+            overflow: hidden;
         }
-
         .video-container {
             display: flex;
             justify-content: center;
             align-items: center;
-            flex-direction: column;
+            width: 100%;
+            padding: 60px 10px 10px;
+            box-sizing: border-box;
         }
-
         video {
-            max-width: 100%;
-            max-height: 100%;
-            outline: none; /* Removes the outline on focus */
-        }
-
-        html, body {
-            width: 98.5%;
-            position: fixed;  /* Freeze page position */
-        }
-        
-        /* Adjust size as needed for iPad */
-        video {
-            width: 960px;
-            height: 540px;
+            width: 100%;
+            max-width: 960px;
+            max-height: calc(100vh - 80px);
+            height: auto;      /* was a fixed 540px, which distorted on narrow screens */
+            outline: none;
+            background: #000;
         }
     </style>
 </head>
 <body>
     {% include '_header.html' %}
     <div class="video-container">
-        <video id="my-video" controls preload="auto" loop>
+        <video id="my-video" controls preload="metadata" loop playsinline>
             <source src="/videos/{{ video_id }}" type="video/mp4">
             Your browser does not support the video tag.
         </video>
     </div>
     <script>
-      document.getElementById('thumbnail-button').onclick = async function() {
-          // Disable button during processing
-          const btn = this;
-          btn.disabled = true;
-          
-          try {
-              const video = document.getElementById('my-video');
-              const currentTime = Math.floor(video.currentTime);
-              const timeString = `${String(Math.floor(currentTime/3600)).padStart(2,'0')}:${
-                              String(Math.floor((currentTime%3600)/60)).padStart(2,'0')}:${
-                              String(currentTime%60).padStart(2,'0')}`;
-  
-              const response = await fetch(`/api/videos/{{ video_id }}/thumbnail?time=${timeString}`, {
-                  method: 'POST'
-              });
-  
-              if (!response.ok) throw new Error(await response.text());
-              // Redirect to index instead of reloading play page
-              setTimeout(() => window.location.href = "/", 500);
-          } catch (error) {
-              console.error('Error:', error);
-              alert(`Thumbnail failed: ${error.message}`);
-          } finally {
-              btn.disabled = false;
-          }
-      };
-  </script>  
+      (function () {
+          const button = document.getElementById('thumbnail-button');
+          const videoId = document.querySelector('.header').dataset.videoId;
+
+          button.addEventListener('click', async function () {
+              button.disabled = true;
+              try {
+                  const video = document.getElementById('my-video');
+                  const seconds = Math.max(0, Math.floor(video.currentTime));
+                  const pad = (value) => String(value).padStart(2, '0');
+                  const timecode = `${pad(Math.floor(seconds / 3600))}:${pad(Math.floor((seconds % 3600) / 60))}:${pad(seconds % 60)}`;
+
+                  const response = await fetch(
+                      `/api/videos/${encodeURIComponent(videoId)}/thumbnail?time=${encodeURIComponent(timecode)}`,
+                      { method: 'POST' }
+                  );
+                  if (!response.ok) {
+                      const problem = await response.json().catch(() => ({}));
+                      throw new Error(problem.detail || 'Thumbnail generation failed.');
+                  }
+                  window.location.href = '/';
+              } catch (error) {
+                  alert(error.message);
+              } finally {
+                  button.disabled = false;
+              }
+          });
+      })();
+  </script>
 </body>
 </html>

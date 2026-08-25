@@ -1,17 +1,22 @@
-version: '3'
-
 services:
   video-server:
     build: .
     container_name: video-server
     ports:
-      - "6969:6969"
+      - "${PORT:-6969}:6969"
     volumes:
+      # A directory, not a bare file: bind-mounting a file that does not yet
+      # exist makes Docker create a directory in its place, which then breaks
+      # database initialisation on first boot.
+      - ./data:/data
       - ./thumbnails:/app/thumbnails
-      - ./video_db.json:/app/video_db.json
-      - ${PARENT_DIRECTORY}:/videos_parent
+      - ${PARENT_DIRECTORY:?set PARENT_DIRECTORY in .env}:/videos_parent
     environment:
-      - VIDEO_DIR=/videos_parent/${VIDEO_FOLDER}
+      - VIDEO_DIR=/videos_parent/${VIDEO_FOLDER:?set VIDEO_FOLDER in .env}
+      - PARENT_DIR=/videos_parent
       - THUMBNAIL_DIR=/app/thumbnails
-      - DB_FILE=/app/video_db.json
+      - DB_FILE=/data/video_db.json
+      - ALLOWED_IPS=${ALLOWED_IPS:-127.0.0.1,::1}
+      - TRUSTED_PROXIES=${TRUSTED_PROXIES:-}
+      - PORT=6969
     restart: unless-stopped

@@ -3,3 +3,7 @@ __pycache__
 .venv
 config.json
 video_db.json
+data/
+.env
+.pytest_cache
+.ruff_cache

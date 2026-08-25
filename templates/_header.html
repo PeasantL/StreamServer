@@ -1,66 +1,64 @@
-<div class="header">
-    <button id="back-button">Go Back</button>
-    <div class="video-title">{{ video_name }}</div>
+{# Rendered inside play_mp4.html. The video id is carried on a data attribute
+   rather than interpolated into JavaScript: Jinja's autoescaping is HTML
+   escaping, which is the wrong escaping for a script context. #}
+<div class="header" data-video-id="{{ video_id }}">
+    <button type="button" id="back-button">Go Back</button>
+    <div class="video-title">{{ video_title }}</div>
     <div class="video-actions">
-        <button id="rename-button">Rename</button>
-        <button id="delete-button">Delete</button>
-        <button id="thumbnail-button">Thumbnail</button>
+        <button type="button" id="rename-button">Rename</button>
+        <button type="button" id="delete-button">Delete</button>
+        <button type="button" id="thumbnail-button">Thumbnail</button>
     </div>
 </div>
 
 <script>
-    // Back button functionality
-    document.getElementById('back-button').onclick = function() {
-        window.history.back();
-    };
+    (function () {
+        const header = document.querySelector('.header');
+        const videoId = header.dataset.videoId;
 
-    // Rename button functionality
-    document.getElementById('rename-button').onclick = function() {
-        const newName = prompt("Enter new name for the video (without extension):");
-        if (newName) {
-            fetch(`/api/videos/{{ video_id }}/update`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ title: newName,
-                  description: "",
-                  tags: []
-                 })
-            })
-            .then(response => {
-                if (response.ok) {
-                    return response.json();  // Parse the response JSON if successful
-                } else {
-                    throw new Error('Failed to rename video.');
+        document.getElementById('back-button').addEventListener('click', function () {
+            window.history.back();
+        });
+
+        document.getElementById('rename-button').addEventListener('click', async function () {
+            const newName = prompt('Enter new name for the video:');
+            if (!newName) {
+                return;
+            }
+            try {
+                const response = await fetch(`/api/videos/${encodeURIComponent(videoId)}/update`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ title: newName, description: '', tags: [] })
+                });
+                if (!response.ok) {
+                    const problem = await response.json().catch(() => ({}));
+                    throw new Error(problem.detail || 'Rename failed.');
                 }
-            })
-            .then(data => {
-                alert(data.detail);
-                // Redirect to the index page to refresh the video list
                 window.location.href = '/';
-            })
-            .catch(error => {
-                console.error('Error:', error);
+            } catch (error) {
                 alert(error.message);
-            });
-        }
-    };
+            }
+        });
 
-    // Delete button functionality
-    document.getElementById('delete-button').onclick = function() {
-        if (confirm("Are you sure you want to delete this video?")) {
-            fetch(`/api/videos/{{ video_id }}`, {
-                method: 'DELETE'
-            })
-            .then(response => {
-                if (response.ok) {
-                    alert('Video deleted successfully!');
-                    window.location.href = '/';
-                } else {
-                    alert('Failed to delete video.');
+        document.getElementById('delete-button').addEventListener('click', async function () {
+            if (!confirm('Delete this video? This cannot be undone.')) {
+                return;
+            }
+            try {
+                const response = await fetch(`/api/videos/${encodeURIComponent(videoId)}`, {
+                    method: 'DELETE'
+                });
+                if (!response.ok) {
+                    const problem = await response.json().catch(() => ({}));
+                    throw new Error(problem.detail || 'Delete failed.');
                 }
-            });
-        }
-    };
+                window.location.href = '/';
+            } catch (error) {
+                alert(error.message);
+            }
+        });
+    })();
 </script>
 
 <style>
@@ -77,14 +75,15 @@
       left: 0;
       right: 0;
       z-index: 1000;
+      box-sizing: border-box;
   }
   #back-button {
-      flex: 0 0 auto; /* Don't grow, don't shrink, auto basis */
+      flex: 0 0 auto;
       margin-right: 10px;
   }
   .video-title {
-      flex: 1 1 auto; /* Grow and shrink as needed */
-      min-width: 0; /* Allows text truncation */
+      flex: 1 1 auto;
+      min-width: 0;
       text-align: center;
       font-size: 18px;
       font-weight: bold;
@@ -93,11 +92,9 @@
       text-overflow: ellipsis;
   }
   .video-actions {
-      flex: 0 0 auto; /* Don't grow, don't shrink, auto basis */
+      flex: 0 0 auto;
       display: flex;
-      margin-left: 10px;
-  }
-  .video-actions button {
+      gap: 10px;
       margin-left: 10px;
   }
   button {
@@ -106,10 +103,18 @@
       color: white;
       border: none;
       cursor: pointer;
-      white-space: nowrap; /* Prevent button text from wrapping */
+      white-space: nowrap;
       border-radius: 5px;
   }
   button:hover {
       background-color: #444;
+  }
+  button:focus-visible {
+      outline: 2px solid #4CAF50;
+      outline-offset: 2px;
+  }
+  button:disabled {
+      opacity: .6;
+      cursor: not-allowed;
   }
 </style>

@@ -1,9 +1,8 @@
-FROM python:3.9-slim
+FROM python:3.12-slim
 
-# Set working directory
 WORKDIR /app
 
-# Install ffmpeg and other dependencies
+# ffmpeg and ffprobe are both used; curl backs the HEALTHCHECK below.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     ffmpeg \
@@ -11,25 +10,30 @@ RUN apt-get update && \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements file first (for better caching)
 COPY requirements.txt .
-
-# Install dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
-COPY main.py middleware.py utils.py database.py config.py ./
+COPY *.py ./
 COPY templates/ ./templates/
-COPY static/ ./static/ 
+# config.json is gitignored, so the image ships the example instead and lets
+# environment variables (or a mounted file) override it at runtime.
+COPY config_example.json ./config.json
 
-# Copy default config
-COPY config.json ./
+# /data holds the database; /videos_parent is where libraries get mounted.
+RUN mkdir -p /app/thumbnails /data && \
+    useradd --create-home --uid 10001 stream && \
+    chown -R stream:stream /app /data
+USER stream
 
-# Create thumbnail directory
-RUN mkdir -p thumbnails
+ENV THUMBNAIL_DIR=/app/thumbnails \
+    DB_FILE=/data/video_db.json \
+    PORT=6969
 
-# Expose the port
 EXPOSE 6969
 
-# Run the application
-CMD ["python", "main.py"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -fsS "http://127.0.0.1:${PORT}/healthz" || exit 1
+
+# --no-proxy-headers: forwarded-header policy lives in middleware.client_ip,
+# which honours X-Forwarded-For only from configured TRUSTED_PROXIES.
+CMD ["sh", "-c", "exec uvicorn main:app --host 0.0.0.0 --port ${PORT} --no-proxy-headers"]

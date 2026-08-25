@@ -5,5 +5,11 @@ __pycache__/
 *.pyd
 .git/
 .pytest_cache/
+.ruff_cache/
 .coverage
 htmlcov/
+tests/
+thumbnails/
+data/
+.env
+config.json
