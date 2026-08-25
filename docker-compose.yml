@@ -18,5 +18,7 @@ services:
       - DB_FILE=/data/video_db.json
       - ALLOWED_IPS=${ALLOWED_IPS:-127.0.0.1,::1}
       - TRUSTED_PROXIES=${TRUSTED_PROXIES:-}
+      - GELBOORU_API_KEY=${GELBOORU_API_KEY:-}
+      - GELBOORU_USER_ID=${GELBOORU_USER_ID:-}
       - PORT=6969
     restart: unless-stopped

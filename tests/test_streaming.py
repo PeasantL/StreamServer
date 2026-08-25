@@ -181,3 +181,74 @@ def test_download_rejects_internal_and_non_media_urls(client, app_env):
 def test_unknown_task_is_404(client, app_env):
     test_client, _ = client
     assert test_client.get("/api/task-status/does-not-exist").status_code == 404
+
+
+def test_download_accepts_a_booru_post_page(client, app_env, monkeypatch):
+    """A pasted post page is resolved to its original file before queueing."""
+    import boorus
+    import downloads
+
+    test_client, app_module = client
+    monkeypatch.setattr(downloads, "assert_safe_url", lambda url: None)
+    monkeypatch.setattr(
+        boorus,
+        "resolve_post",
+        lambda url: boorus.Post(
+            site="gelbooru",
+            post_id="42",
+            page_url=url,
+            file_url="https://img3.gelbooru.com/images/ab/cd/abcd.mp4",
+        ),
+    )
+
+    queued = []
+    monkeypatch.setattr(
+        app_module, "process_download_task", lambda *args, **kwargs: queued.append((args, kwargs))
+    )
+
+    response = test_client.post(
+        "/api/download",
+        json={"url": "https://gelbooru.com/index.php?page=post&s=view&id=42"},
+    )
+
+    assert response.status_code == 200
+    assert "task_id" in response.json()
+    (args, kwargs) = queued[0]
+    assert args[1] == "https://img3.gelbooru.com/images/ab/cd/abcd.mp4"
+    assert args[2] == ".mp4"
+    assert kwargs["title"] == "gelbooru 42"
+    assert kwargs["page_url"].endswith("id=42")
+
+
+def test_download_explains_that_a_booru_post_is_not_a_video(client, app_env, monkeypatch):
+    """The catalogue only stores .mp4 and .webm, so an image post is refused
+    up front rather than after the progress bar has run."""
+    import boorus
+
+    test_client, _ = client
+    monkeypatch.setattr(
+        boorus,
+        "resolve_post",
+        lambda url: boorus.Post(
+            site="rule34.us",
+            post_id="42",
+            page_url=url,
+            file_url="https://img.rule34.us/images/ab/cd/abcd.png",
+        ),
+    )
+
+    response = test_client.post(
+        "/api/download", json={"url": "https://rule34.us/index.php?r=posts/view&id=42"}
+    )
+
+    assert response.status_code == 400
+    assert ".png" in response.json()["detail"]
+
+
+def test_a_failed_booru_resolution_is_a_400_with_the_reason(client, app_env):
+    test_client, _ = client
+    response = test_client.post(
+        "/api/download", json={"url": "https://gelbooru.com/index.php?page=post&s=list"}
+    )
+    assert response.status_code == 400
+    assert "not a single post" in response.json()["detail"]

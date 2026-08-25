@@ -9,6 +9,7 @@ disk with a single request.
 from __future__ import annotations
 
 import ipaddress
+import json
 import logging
 import socket
 from collections.abc import Callable, Iterator
@@ -25,6 +26,14 @@ ALLOWED_SCHEMES = ("http", "https")
 ALLOWED_EXTENSIONS = (".mp4", ".webm")
 MAX_REDIRECTS = 5
 CHUNK_SIZE = 1024 * 1024
+
+# Booru APIs rate-limit or reject the default ``python-requests/x.y`` agent,
+# and danbooru's terms ask that clients identify themselves.
+USER_AGENT = "StreamServer/1.0 (+https://github.com/PeasantL/StreamServer)"
+
+# Ceiling for a page or API response read into memory. Distinct from
+# max_download_bytes, which sizes a video going to disk.
+MAX_TEXT_BYTES = 4 * 1024 * 1024
 
 
 class UnsafeURLError(ValueError):
@@ -90,15 +99,27 @@ def assert_safe_url(url: str) -> None:
             )
 
 
-def open_stream(url: str) -> requests.Response:
-    """GET *url*, re-validating the target across every redirect hop."""
+def open_stream(
+    url: str, *, headers: dict[str, str] | None = None
+) -> requests.Response:
+    """GET *url*, re-validating the target across every redirect hop.
+
+    ``headers`` carries per-request extras such as the ``Referer`` a booru CDN
+    wants before it will serve a file. They are addressed to the host they were
+    written for, so a redirect that leaves that host drops them rather than
+    handing them to somewhere else.
+    """
     session = requests.Session()
+    session.headers["User-Agent"] = USER_AGENT
+    extra = dict(headers or {})
+    origin_host = urlsplit(url).hostname
     current = url
 
     for _ in range(MAX_REDIRECTS + 1):
         assert_safe_url(current)
         response = session.get(
             current,
+            headers=extra if urlsplit(current).hostname == origin_host else {},
             stream=True,
             allow_redirects=False,
             timeout=settings.download_timeout,
@@ -115,6 +136,48 @@ def open_stream(url: str) -> requests.Response:
         return response
 
     raise UnsafeURLError("Too many redirects")
+
+
+def fetch_text(
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+    max_bytes: int = MAX_TEXT_BYTES,
+) -> str:
+    """Read a page or API response into memory, with a hard size ceiling.
+
+    ``requests.Response.text`` would buffer whatever the far end sent; a booru
+    is not going to hand back a gigabyte of HTML, but nothing about the
+    endpoint guarantees that, so the read stops at *max_bytes*.
+    """
+    response = open_stream(url, headers=headers)
+    chunks: list[bytes] = []
+    size = 0
+
+    with response:
+        for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
+            if not chunk:
+                continue
+            size += len(chunk)
+            if size > max_bytes:
+                raise DownloadTooLargeError(
+                    f"Response from {url} exceeded {max_bytes} bytes"
+                )
+            chunks.append(chunk)
+        # apparent_encoding is deliberately not consulted: it re-reads
+        # response.content, which a streamed body no longer has.
+        encoding = response.encoding or "utf-8"
+
+    return b"".join(chunks).decode(encoding, errors="replace")
+
+
+def fetch_json(url: str, *, headers: dict[str, str] | None = None) -> object:
+    """``fetch_text`` plus a JSON parse, with the URL kept in the error."""
+    body = fetch_text(url, headers=headers)
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Response from {url} was not JSON: {exc}") from None
 
 
 def stream_to_file(
