@@ -39,6 +39,11 @@ DEFAULTS: dict[str, Any] = {
     "thumbnail_width": 320,
     "max_download_bytes": 8 * 1024 * 1024 * 1024,
     "download_timeout": 30,
+    # Gelbooru has required credentials on its JSON API since 2024. Leave them
+    # empty and booru resolution falls back to reading the post page, which
+    # still exposes the original file link.
+    "gelbooru_api_key": "",
+    "gelbooru_user_id": "",
     "host": "0.0.0.0",
     "port": 6969,
 }
@@ -56,6 +61,8 @@ ENV_KEYS = {
     "THUMBNAIL_WIDTH": "thumbnail_width",
     "MAX_DOWNLOAD_BYTES": "max_download_bytes",
     "DOWNLOAD_TIMEOUT": "download_timeout",
+    "GELBOORU_API_KEY": "gelbooru_api_key",
+    "GELBOORU_USER_ID": "gelbooru_user_id",
     "HOST": "host",
     "PORT": "port",
 }
@@ -75,6 +82,8 @@ class Settings:
     thumbnail_width: int
     max_download_bytes: int
     download_timeout: int
+    gelbooru_api_key: str
+    gelbooru_user_id: str
     host: str
     port: int
 
@@ -153,6 +162,8 @@ def load_settings(config_file: str | os.PathLike[str] | None = None) -> Settings
         thumbnail_width=int(values["thumbnail_width"]),
         max_download_bytes=int(values["max_download_bytes"]),
         download_timeout=int(values["download_timeout"]),
+        gelbooru_api_key=str(values["gelbooru_api_key"]),
+        gelbooru_user_id=str(values["gelbooru_user_id"]),
         host=str(values["host"]),
         port=int(values["port"]),
     )

@@ -14,12 +14,14 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from jinja2 import StrictUndefined
 from pydantic import BaseModel, Field
 
+import boorus
 import database
 import downloads
 import utils
@@ -247,33 +249,82 @@ class DownloadRequest(BaseModel):
 
 @app.post("/api/download")
 async def download_video(payload: DownloadRequest, background_tasks: BackgroundTasks):
-    extension = downloads.url_extension(payload.url)
+    """Accept either a direct media URL or a booru post page.
+
+    A booru post is resolved here rather than inside the background task so the
+    user finds out immediately, and specifically, that the post they pasted is
+    a PNG or is login-restricted -- instead of watching a progress bar and then
+    reading a generic failure.
+    """
+    url = payload.url.strip()
+    page_url: str | None = None
+    title: str | None = None
+
+    if boorus.find_site(url) is not None:
+        try:
+            # Resolution makes two blocking HTTP calls; the event loop is
+            # serving in-flight video streams and must not do them.
+            post = await run_in_threadpool(boorus.resolve_post, url)
+        except boorus.BooruError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        except (OSError, ValueError) as exc:
+            log.warning("Booru resolution of %s failed: %s", url, exc)
+            raise HTTPException(
+                status_code=400, detail=f"Could not read that booru page: {exc}"
+            ) from None
+        page_url, title, url = post.page_url, post.title, post.file_url
+
+    extension = downloads.url_extension(url)
     if extension not in downloads.ALLOWED_EXTENSIONS:
-        raise HTTPException(
-            status_code=400,
-            detail="URL must point at a .mp4 or .webm file.",
-        )
+        if page_url is not None:
+            detail = (
+                f"That post's original file is {extension or 'of an unknown type'}; "
+                "this server only stores .mp4 and .webm."
+            )
+        else:
+            detail = "URL must point at a .mp4 or .webm file."
+        raise HTTPException(status_code=400, detail=detail)
 
     try:
-        downloads.assert_safe_url(payload.url)
+        downloads.assert_safe_url(url)
     except downloads.UnsafeURLError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
 
     task_id = registry.create("download")
     background_tasks.add_task(
-        process_download_task, task_id, payload.url, extension, database.current_dir()
+        process_download_task,
+        task_id,
+        url,
+        extension,
+        database.current_dir(),
+        page_url=page_url,
+        title=title,
     )
     return {"task_id": task_id}
 
 
-def process_download_task(task_id: str, url: str, extension: str, directory: Path) -> None:
-    """Fetch, transcode if needed, thumbnail, and register one remote video."""
+def process_download_task(
+    task_id: str,
+    url: str,
+    extension: str,
+    directory: Path,
+    page_url: str | None = None,
+    title: str | None = None,
+) -> None:
+    """Fetch, transcode if needed, thumbnail, and register one remote video.
+
+    ``page_url`` is the booru post a direct URL came from, when there was one.
+    It is recorded as the description so the entry can be traced back, and sent
+    as the Referer because booru CDNs commonly refuse hotlinked requests.
+    """
     video_id = str(uuid.uuid4())
     remote_name = downloads.url_filename(url) or f"{video_id}{extension}"
 
     try:
         registry.update(task_id, status="downloading", progress=0)
-        response = downloads.open_stream(url)
+        response = downloads.open_stream(
+            url, headers={"Referer": page_url} if page_url else None
+        )
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             # The remote filename is metadata only; the file on disk is named
@@ -316,11 +367,13 @@ def process_download_task(task_id: str, url: str, extension: str, directory: Pat
                     "id": video_id,
                     "directory": str(directory.resolve()),
                     "original_filename": remote_name,
-                    "title": Path(remote_name).stem,
+                    # A booru names its files by md5, which makes a useless
+                    # label; the resolver supplies "gelbooru 12345" instead.
+                    "title": title or Path(remote_name).stem,
                     "path": mp4_name,
                     "thumbnail_path": f"{video_id}.jpg",
                     "creation_date": datetime.datetime.now().isoformat(),
-                    "description": "",
+                    "description": page_url or "",
                     "tags": [],
                     "has_audio": utils.has_audio_stream(destination),
                     "source_name": None,
