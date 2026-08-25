@@ -1,6 +1,13 @@
 {
-  "video_dir":  "/path/to/your/videos",
-  "allowed_ips": ["0.0.0.0", "127.0.0.1", "::1"],
+  "video_dir": "/path/to/your/videos",
   "thumbnail_dir": "thumbnails",
-  "db_file": "video_db.json"
+  "db_file": "video_db.json",
+  "allowed_ips": ["127.0.0.1", "::1"],
+  "trusted_proxies": [],
+  "ffmpeg_timeout": 30,
+  "convert_timeout": 3600,
+  "thumbnail_width": 320,
+  "max_download_bytes": 8589934592,
+  "host": "0.0.0.0",
+  "port": 6969
 }
