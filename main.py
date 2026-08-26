@@ -19,7 +19,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from jinja2 import StrictUndefined
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 import boorus
 import database
@@ -141,6 +141,8 @@ async def play_video(video_id: str, request: Request):
         {
             "video_id": video_id,
             "video_title": video.get("title", ""),
+            "video_description": video.get("description", ""),
+            "video_tags": video.get("tags", []),
         },
     )
 
@@ -259,6 +261,7 @@ async def download_video(payload: DownloadRequest, background_tasks: BackgroundT
     url = payload.url.strip()
     page_url: str | None = None
     title: str | None = None
+    tags: list[str] = []
 
     if boorus.find_site(url) is not None:
         try:
@@ -273,6 +276,9 @@ async def download_video(payload: DownloadRequest, background_tasks: BackgroundT
                 status_code=400, detail=f"Could not read that booru page: {exc}"
             ) from None
         page_url, title, url = post.page_url, post.title, post.file_url
+        # A booru post already carries the vocabulary this catalogue wants to
+        # search by, so the import brings it along rather than landing untagged.
+        tags = list(post.tags)
 
     extension = downloads.url_extension(url)
     if extension not in downloads.ALLOWED_EXTENSIONS:
@@ -299,6 +305,7 @@ async def download_video(payload: DownloadRequest, background_tasks: BackgroundT
         database.current_dir(),
         page_url=page_url,
         title=title,
+        tags=tags,
     )
     return {"task_id": task_id}
 
@@ -310,12 +317,14 @@ def process_download_task(
     directory: Path,
     page_url: str | None = None,
     title: str | None = None,
+    tags: list[str] | None = None,
 ) -> None:
     """Fetch, transcode if needed, thumbnail, and register one remote video.
 
     ``page_url`` is the booru post a direct URL came from, when there was one.
     It is recorded as the description so the entry can be traced back, and sent
     as the Referer because booru CDNs commonly refuse hotlinked requests.
+    ``tags`` are the post's own tags, when the site's API supplied them.
     """
     video_id = str(uuid.uuid4())
     remote_name = downloads.url_filename(url) or f"{video_id}{extension}"
@@ -374,7 +383,7 @@ def process_download_task(
                     "thumbnail_path": f"{video_id}.jpg",
                     "creation_date": datetime.datetime.now().isoformat(),
                     "description": page_url or "",
-                    "tags": [],
+                    "tags": list(tags or []),
                     "has_audio": utils.has_audio_stream(destination),
                     "source_name": None,
                     "original_webm": archived_webm,
@@ -390,23 +399,63 @@ def process_download_task(
 # --- metadata ----------------------------------------------------------------
 
 
+MAX_TAG_LENGTH = 100
+
+
 class UpdateVideoRequest(BaseModel):
-    title: str = Field(min_length=1, max_length=500)
-    description: str = Field(default="", max_length=5000)
-    tags: list[str] = Field(default_factory=list, max_length=50)
+    """A *partial* update: an omitted field is left as it was.
+
+    Every field used to be mandatory, so the rename button -- which only has a
+    title to send -- posted an empty description and an empty tag list along
+    with it, silently destroying both. For a video imported from a booru that
+    meant losing its tags and the post URL it came from, which is the only
+    record of where the file originated.
+    """
+
+    title: str | None = Field(default=None, min_length=1, max_length=500)
+    description: str | None = Field(default=None, max_length=5000)
+    tags: list[str] | None = Field(default=None, max_length=50)
+
+    @field_validator("tags")
+    @classmethod
+    def _clean_tags(cls, tags: list[str] | None) -> list[str] | None:
+        """Trim, lowercase and de-duplicate, preserving the order given."""
+        if tags is None:
+            return None
+        cleaned: list[str] = []
+        for tag in tags:
+            value = tag.strip().lower()
+            if not value or value in cleaned:
+                continue
+            if len(value) > MAX_TAG_LENGTH:
+                raise ValueError(f"Tag {value[:20]!r}... exceeds {MAX_TAG_LENGTH} characters")
+            cleaned.append(value)
+        return cleaned
+
+    def changes(self) -> dict[str, Any]:
+        """Only the fields the client actually sent."""
+        return {
+            key: value
+            for key, value in (
+                ("title", self.title),
+                ("description", self.description),
+                ("tags", self.tags),
+            )
+            if value is not None
+        }
 
 
 @app.post("/api/videos/{video_id}/update")
 async def update_video_metadata(video_id: str, payload: UpdateVideoRequest):
     _get_video_or_404(video_id)
-    updated = database.update_video_in_db(
-        video_id,
-        {
-            "title": payload.title,
-            "description": payload.description,
-            "tags": payload.tags,
-        },
-    )
+
+    changes = payload.changes()
+    if not changes:
+        raise HTTPException(
+            status_code=400, detail="Provide at least one of title, description or tags."
+        )
+
+    updated = database.update_video_in_db(video_id, changes)
     if not updated:
         raise HTTPException(status_code=500, detail="Failed to update video metadata")
     return {"detail": "Video metadata updated successfully", "video": updated}
