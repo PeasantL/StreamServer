@@ -142,6 +142,51 @@
             margin-top: 40px;
             text-align: center;
         }
+        .tray {
+            position: fixed;
+            right: 16px;
+            bottom: 16px;
+            z-index: 900;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            width: min(320px, calc(100vw - 32px));
+        }
+        .tray:empty { display: none; }
+        .job {
+            padding: 10px 12px;
+            border: 1px solid #444;
+            border-radius: 8px;
+            background-color: #242424;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, .5);
+            font-size: 13px;
+        }
+        .job.failed { border-color: #a33; }
+        .job.completed { border-color: #4CAF50; }
+        .job-head {
+            display: flex;
+            justify-content: space-between;
+            gap: 10px;
+        }
+        .job-label { font-weight: 600; }
+        .job-note {
+            margin-top: 4px;
+            color: #aaa;
+            overflow-wrap: anywhere;
+        }
+        .job-bar {
+            height: 4px;
+            margin-top: 8px;
+            border-radius: 2px;
+            background-color: #3a3a3a;
+            overflow: hidden;
+        }
+        .job-bar span {
+            display: block;
+            height: 100%;
+            background-color: #4CAF50;
+            transition: width .3s ease;
+        }
         .pagination {
             display: flex;
             align-items: center;
@@ -243,6 +288,8 @@
         <input type="text" id="videoUrl" class="url-input" placeholder="Video URL or booru post page">
         <button type="button" id="downloadButton" class="download-button">Download</button>
 
+        <button type="button" id="rescanButton" class="clear-button">Rescan</button>
+
         {% if auth_enabled %}
         <button type="button" id="logoutButton" class="clear-button">Sign out</button>
         {% endif %}
@@ -267,6 +314,9 @@
     {% endif %}
 
     <div class="status" id="status" role="status" data-scan-task="{{ scan_task_id or '' }}"></div>
+
+    {# Every job this server is running, not just the one this tab started. #}
+    <div class="tray" id="tray" aria-live="polite"></div>
 
     <div class="container" id="videoContainer">
         {% for video in video_files %}
@@ -437,6 +487,24 @@
                 }
             }
 
+            document.getElementById('rescanButton').addEventListener('click', async (event) => {
+                const button = event.currentTarget;
+                button.disabled = true;
+                try {
+                    const response = await fetch('/api/scan', { method: 'POST' });
+                    if (!response.ok) {
+                        const problem = await response.json().catch(() => ({}));
+                        throw new Error(problem.detail || 'Could not start a scan.');
+                    }
+                    // The tray takes it from here and reloads when it finishes.
+                    refreshTray();
+                } catch (error) {
+                    alert(error.message);
+                } finally {
+                    button.disabled = false;
+                }
+            });
+
             const logoutButton = document.getElementById('logoutButton');
             if (logoutButton) {
                 logoutButton.addEventListener('click', async () => {
@@ -451,6 +519,89 @@
                     startDownload();
                 }
             });
+
+            // --- job tray -------------------------------------------------
+            //
+            // Polls the whole registry rather than one task id, so a download
+            // or import started in another tab is visible here too.
+
+            const tray = document.getElementById('tray');
+            const KINDS = { download: 'Download', import: 'Booru import', scan: 'Library scan' };
+
+            // Finished jobs linger briefly so a result is not missed, then
+            // stop being drawn; the server expires them on its own schedule.
+            const SHOW_FINISHED_FOR_SECONDS = 20;
+            const TRAY_INTERVAL_MS = 2000;
+
+            let trayActive = 0;
+
+            function renderJob(task) {
+                const node = document.createElement('div');
+                node.className = `job ${task.status}`;
+
+                const head = document.createElement('div');
+                head.className = 'job-head';
+
+                const label = document.createElement('span');
+                label.className = 'job-label';
+                label.textContent = KINDS[task.kind] || 'Job';
+                head.appendChild(label);
+
+                const state = document.createElement('span');
+                state.textContent = LABELS[task.status] || task.status;
+                head.appendChild(state);
+                node.appendChild(head);
+
+                const note = task.error || task.detail;
+                if (note) {
+                    const noteEl = document.createElement('div');
+                    noteEl.className = 'job-note';
+                    // textContent, not innerHTML: the note can carry a video
+                    // title, which is user-controlled text.
+                    noteEl.textContent = note;
+                    node.appendChild(noteEl);
+                }
+
+                if (task.active) {
+                    const bar = document.createElement('div');
+                    bar.className = 'job-bar';
+                    const fill = document.createElement('span');
+                    fill.style.width = `${Math.max(2, task.progress || 0)}%`;
+                    bar.appendChild(fill);
+                    node.appendChild(bar);
+                }
+
+                return node;
+            }
+
+            async function refreshTray() {
+                let tasks;
+                try {
+                    const response = await fetch('/api/tasks');
+                    if (!response.ok) {
+                        return;
+                    }
+                    ({ tasks } = await response.json());
+                } catch (error) {
+                    return;   // A transient failure is not worth reporting here.
+                }
+
+                const visible = tasks.filter((task) =>
+                    task.active || task.finished_age < SHOW_FINISHED_FOR_SECONDS);
+
+                tray.replaceChildren(...visible.map(renderJob));
+
+                // Something finished since the last poll. If this tab is not
+                // the one driving a download, its grid is now stale.
+                const active = visible.filter((task) => task.active).length;
+                if (active < trayActive && !downloadButton.disabled) {
+                    window.location.reload();
+                }
+                trayActive = active;
+            }
+
+            refreshTray();
+            setInterval(refreshTray, TRAY_INTERVAL_MS);
 
             // Report the startup scan, if one is still running, without
             // blocking the catalogue from rendering.

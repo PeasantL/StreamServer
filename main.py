@@ -350,6 +350,32 @@ async def get_task_status(task_id: str):
     return task
 
 
+@app.get("/api/tasks")
+async def list_tasks():
+    """Every job this process knows about, running or recently finished.
+
+    A download started in one tab was previously invisible everywhere else,
+    including after a reload of the tab that started it -- the task id lived
+    only in that page's JavaScript. The registry always knew; nothing exposed
+    it.
+    """
+    return {"tasks": registry.list_all()}
+
+
+@app.post("/api/scan")
+async def rescan_library():
+    """Re-scan the current folder on demand.
+
+    Scanning only ever happened at startup and on a folder switch, so a file
+    copied into the library while the server was running stayed invisible
+    until it was restarted.
+    """
+    directory = database.current_dir()
+    task_id = registry.create("scan")
+    threading.Thread(target=_run_scan, args=(task_id, directory), daemon=True).start()
+    return {"task_id": task_id}
+
+
 # --- downloading -------------------------------------------------------------
 
 
