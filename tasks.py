@@ -30,10 +30,15 @@ class TaskRegistry:
         with self._lock:
             self._prune_locked()
             self._tasks[task_id] = {
+                "id": task_id,
                 "kind": kind,
                 "status": "in_progress",
                 "progress": 0,
                 "error": None,
+                # A human-readable result for jobs whose outcome is more than
+                # pass or fail -- a batch import that added some and skipped
+                # others has nothing useful to say through status alone.
+                "detail": None,
                 "created_at": time.monotonic(),
                 "finished_at": None,
             }
@@ -48,17 +53,45 @@ class TaskRegistry:
             if task.get("status") in TERMINAL_STATES and task["finished_at"] is None:
                 task["finished_at"] = time.monotonic()
 
+    @staticmethod
+    def _public(task: dict[str, Any], now: float) -> dict[str, Any]:
+        """The client-facing shape. Monotonic timestamps stay internal."""
+        finished = task["finished_at"]
+        return {
+            "id": task["id"],
+            "kind": task["kind"],
+            "status": task["status"],
+            "progress": task["progress"],
+            "error": task["error"],
+            "detail": task["detail"],
+            "active": task["status"] not in TERMINAL_STATES,
+            # Seconds since the job started, and since it ended if it has.
+            "age": int(now - task["created_at"]),
+            "finished_age": None if finished is None else int(now - finished),
+        }
+
     def get(self, task_id: str) -> dict[str, Any] | None:
         with self._lock:
             self._prune_locked()
             task = self._tasks.get(task_id)
             if task is None:
                 return None
-            return {
-                "status": task["status"],
-                "progress": task["progress"],
-                "error": task["error"],
-            }
+            return self._public(task, time.monotonic())
+
+    def list_all(self) -> list[dict[str, Any]]:
+        """Every live record, newest first.
+
+        This is what makes a job started in another tab visible at all: the
+        registry is process-wide, but nothing ever exposed more than the one
+        task id a client happened to be holding.
+        """
+        with self._lock:
+            self._prune_locked()
+            now = time.monotonic()
+            tasks = sorted(
+                self._tasks.values(), key=lambda task: task["created_at"], reverse=True
+            )
+            return [self._public(task, now) for task in tasks]
 
     def _prune_locked(self) -> None:
         now = time.monotonic()

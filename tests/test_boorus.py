@@ -334,3 +334,110 @@ def test_the_post_page_is_sent_as_the_referer(monkeypatch):
     calls = _stub(monkeypatch, json={"file_url": "https://cdn.donmai.us/original/a/b/x.mp4"})
     boorus.resolve_post(page)
     assert calls["json"][0][1] == {"Referer": page}
+
+
+# --- tag extraction ----------------------------------------------------------
+
+
+def test_danbooru_tags_are_imported_from_the_api(monkeypatch):
+    _stub(
+        monkeypatch,
+        json={
+            "file_url": "https://cdn.donmai.us/original/ab/cd/abcd.mp4",
+            "tag_string": "1girl blue_hair Animated  video",
+        },
+    )
+
+    post = boorus.resolve_post("https://danbooru.donmai.us/posts/9876")
+
+    assert post.tags == ("1girl", "blue_hair", "animated", "video")
+
+
+def test_gelbooru_tags_are_imported_from_the_api(monkeypatch):
+    _stub(
+        monkeypatch,
+        json=[{
+            "file_url": "https://img3.gelbooru.com/images/ab/cd/abcd.mp4",
+            "tags": "solo webm",
+        }],
+    )
+
+    post = boorus.resolve_post("https://gelbooru.com/index.php?page=post&s=view&id=42")
+
+    assert post.tags == ("solo", "webm")
+
+
+def test_a_tag_list_is_accepted_as_well_as_a_string(monkeypatch):
+    """Some gelbooru clones send a list where gelbooru itself sends a string."""
+    _stub(
+        monkeypatch,
+        json=[{
+            "file_url": "https://img3.gelbooru.com/images/ab/cd/abcd.mp4",
+            "tags": ["solo", "long hair"],
+        }],
+    )
+
+    post = boorus.resolve_post("https://gelbooru.com/index.php?page=post&s=view&id=42")
+
+    assert post.tags == ("solo", "long", "hair")
+
+
+def test_duplicate_tags_are_collapsed_in_order(monkeypatch):
+    _stub(
+        monkeypatch,
+        json={
+            "file_url": "https://cdn.donmai.us/original/ab/cd/abcd.mp4",
+            "tag_string": "solo SOLO video solo",
+        },
+    )
+
+    post = boorus.resolve_post("https://danbooru.donmai.us/posts/9876")
+
+    assert post.tags == ("solo", "video")
+
+
+def test_the_imported_tag_count_is_capped(monkeypatch):
+    _stub(
+        monkeypatch,
+        json={
+            "file_url": "https://cdn.donmai.us/original/ab/cd/abcd.mp4",
+            "tag_string": " ".join(f"tag{index}" for index in range(500)),
+        },
+    )
+
+    post = boorus.resolve_post("https://danbooru.donmai.us/posts/9876")
+
+    assert len(post.tags) == boorus.MAX_TAGS
+
+
+def test_an_overlong_tag_is_dropped_rather_than_stored(monkeypatch):
+    _stub(
+        monkeypatch,
+        json={
+            "file_url": "https://cdn.donmai.us/original/ab/cd/abcd.mp4",
+            "tag_string": f"solo {'x' * 200} video",
+        },
+    )
+
+    post = boorus.resolve_post("https://danbooru.donmai.us/posts/9876")
+
+    assert post.tags == ("solo", "video")
+
+
+def test_a_post_with_no_tag_field_resolves_untagged(monkeypatch):
+    _stub(monkeypatch, json={"file_url": "https://cdn.donmai.us/original/ab/cd/abcd.mp4"})
+
+    post = boorus.resolve_post("https://danbooru.donmai.us/posts/9876")
+
+    assert post.tags == ()
+
+
+def test_a_scraped_post_resolves_untagged(monkeypatch):
+    """The page scrape finds a file but no usable tag list."""
+    media = "https://video.rule34.us/images/ab/cd/abcd.mp4"
+    _stub(monkeypatch, text=f'<a href="{media}">Original</a>')
+
+    post = boorus.resolve_post("https://rule34.us/index.php?r=posts/view&id=42")
+
+    assert post.file_url == media
+    assert post.tags == ()

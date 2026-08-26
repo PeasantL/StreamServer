@@ -23,7 +23,13 @@ from config import settings
 log = logging.getLogger(__name__)
 
 ALLOWED_SCHEMES = ("http", "https")
-ALLOWED_EXTENSIONS = (".mp4", ".webm")
+
+# Containers a remote download may arrive in. Anything that is not already a
+# browser-playable MP4 is converted after it lands, so this list tracks what
+# utils can convert rather than what a browser can play.
+ALLOWED_EXTENSIONS = (
+    ".mp4", ".webm", ".mkv", ".mov", ".m4v", ".avi", ".flv", ".wmv", ".ts", ".mpg", ".mpeg", ".ogv",
+)
 MAX_REDIRECTS = 5
 CHUNK_SIZE = 1024 * 1024
 

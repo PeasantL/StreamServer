@@ -37,12 +37,74 @@
 <body>
     {% include '_header.html' %}
     <div class="video-container">
-        <video id="my-video" controls preload="metadata" loop playsinline>
+        <video id="my-video" controls preload="metadata" loop playsinline
+               {% if has_subtitles %}crossorigin="anonymous"{% endif %}>
             <source src="/videos/{{ video_id }}" type="video/mp4">
+            {% if has_subtitles %}
+            {# Served as WebVTT whatever the sidecar file on disk actually is. #}
+            <track kind="subtitles" label="Subtitles" srclang="en" default
+                   src="/videos/{{ video_id }}/subtitles">
+            {% endif %}
             Your browser does not support the video tag.
         </video>
     </div>
     <script>
+      (function () {
+          const video = document.getElementById('my-video');
+          const nav = window.streamserver || {};
+
+          // Shortcuts are ignored while a text field has focus, so typing a
+          // title in the edit dialog does not seek the video underneath it.
+          function isTyping(target) {
+              if (!target) {
+                  return false;
+              }
+              const tag = target.tagName;
+              return tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable;
+          }
+
+          const SEEK_SECONDS = 5;
+          const VOLUME_STEP = 0.1;
+
+          document.addEventListener('keydown', function (event) {
+              if (isTyping(event.target) || event.metaKey || event.ctrlKey || event.altKey) {
+                  return;
+              }
+
+              const actions = {
+                  ' ': () => (video.paused ? video.play() : video.pause()),
+                  k: () => (video.paused ? video.play() : video.pause()),
+                  ArrowRight: () => { video.currentTime += SEEK_SECONDS; },
+                  ArrowLeft: () => { video.currentTime -= SEEK_SECONDS; },
+                  ArrowUp: () => { video.volume = Math.min(1, video.volume + VOLUME_STEP); },
+                  ArrowDown: () => { video.volume = Math.max(0, video.volume - VOLUME_STEP); },
+                  m: () => { video.muted = !video.muted; },
+                  f: () => {
+                      if (document.fullscreenElement) {
+                          document.exitFullscreen();
+                      } else if (video.requestFullscreen) {
+                          video.requestFullscreen();
+                      }
+                  },
+                  n: () => { if (nav.nextUrl) { window.location.href = nav.nextUrl; } },
+                  p: () => { if (nav.previousUrl) { window.location.href = nav.previousUrl; } },
+                  Escape: () => {
+                      if (!document.fullscreenElement) {
+                          window.location.href = nav.backUrl || '/';
+                      }
+                  }
+              };
+
+              const action = actions[event.key];
+              if (action) {
+                  // Space would scroll and the arrows would move the page;
+                  // the video is the only thing that should respond here.
+                  event.preventDefault();
+                  action();
+              }
+          });
+      })();
+
       (function () {
           const button = document.getElementById('thumbnail-button');
           const videoId = document.querySelector('.header').dataset.videoId;
@@ -63,7 +125,7 @@
                       const problem = await response.json().catch(() => ({}));
                       throw new Error(problem.detail || 'Thumbnail generation failed.');
                   }
-                  window.location.href = '/';
+                  window.location.href = document.querySelector('.header').dataset.backUrl || '/';
               } catch (error) {
                   alert(error.message);
               } finally {

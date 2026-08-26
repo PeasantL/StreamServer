@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign in</title>
+    <style>
+        body {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+            box-sizing: border-box;
+            background-color: #191919;
+            color: #f0f0f0;
+            font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        }
+        .card {
+            width: 100%;
+            max-width: 340px;
+            padding: 30px;
+            border: 2px solid #333;
+            border-radius: 10px;
+            background-color: #222;
+            box-sizing: border-box;
+        }
+        h1 {
+            margin: 0 0 6px;
+            font-size: 20px;
+        }
+        .subtitle {
+            margin: 0 0 20px;
+            color: #888;
+            font-size: 14px;
+        }
+        label {
+            display: block;
+            margin-bottom: 6px;
+            font-size: 14px;
+            color: #bbb;
+        }
+        input {
+            width: 100%;
+            padding: 10px;
+            border: 2px solid #444;
+            border-radius: 8px;
+            background-color: #191919;
+            color: #f0f0f0;
+            font: inherit;
+            font-size: 16px;
+            box-sizing: border-box;
+        }
+        input:focus-visible, button:focus-visible {
+            outline: 2px solid #4CAF50;
+            outline-offset: 2px;
+        }
+        button {
+            width: 100%;
+            margin-top: 15px;
+            padding: 10px 15px;
+            border: 2px solid #444;
+            border-radius: 8px;
+            background-color: #4CAF50;
+            color: white;
+            font-size: 16px;
+            cursor: pointer;
+        }
+        button:disabled {
+            background-color: #888;
+            cursor: not-allowed;
+        }
+        .error {
+            min-height: 1.2em;
+            margin-top: 12px;
+            color: #ff8a80;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>StreamServer</h1>
+        <p class="subtitle">This server is password protected.</p>
+
+        {# Submitted by fetch() rather than as a form POST: the endpoint sets a
+           cookie and answers with JSON, which keeps the password out of the
+           URL and the error out of a full page reload. #}
+        <form id="login-form" data-next="{{ next }}" autocomplete="on">
+            <label for="password">Password</label>
+            <input type="password" id="password" name="password"
+                   autocomplete="current-password" autofocus required>
+            <button type="submit" id="submit">Sign in</button>
+            <div class="error" id="error" role="alert">{{ error }}</div>
+        </form>
+    </div>
+
+    <script>
+        (function () {
+            const form = document.getElementById('login-form');
+            const passwordInput = document.getElementById('password');
+            const errorEl = document.getElementById('error');
+            const submit = document.getElementById('submit');
+
+            form.addEventListener('submit', async function (event) {
+                event.preventDefault();
+                errorEl.textContent = '';
+                submit.disabled = true;
+
+                try {
+                    const response = await fetch('/login', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            password: passwordInput.value,
+                            next: form.dataset.next || '/'
+                        })
+                    });
+                    const body = await response.json().catch(() => ({}));
+                    if (!response.ok) {
+                        throw new Error(body.detail || 'Sign in failed.');
+                    }
+                    window.location.href = body.next || '/';
+                } catch (error) {
+                    errorEl.textContent = error.message;
+                    passwordInput.value = '';
+                    passwordInput.focus();
+                } finally {
+                    submit.disabled = false;
+                }
+            });
+        })();
+    </script>
+</body>
+</html>

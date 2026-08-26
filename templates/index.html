@@ -63,6 +63,24 @@
             color: #888;
             font-size: 14px;
         }
+        .badges {
+            position: absolute;
+            top: 14px;
+            right: 14px;
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 4px;
+            pointer-events: none;
+        }
+        .badge {
+            padding: 2px 6px;
+            border-radius: 4px;
+            background-color: rgba(0, 0, 0, .75);
+            color: #eee;
+            font-size: 12px;
+            font-variant-numeric: tabular-nums;
+        }
         .video-title {
             width: 100%;
             padding: 5px;
@@ -122,10 +140,124 @@
         .empty {
             color: #888;
             margin-top: 40px;
+            text-align: center;
+        }
+        .tray {
+            position: fixed;
+            right: 16px;
+            bottom: 16px;
+            z-index: 900;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            width: min(320px, calc(100vw - 32px));
+        }
+        .tray:empty { display: none; }
+        .job {
+            padding: 10px 12px;
+            border: 1px solid #444;
+            border-radius: 8px;
+            background-color: #242424;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, .5);
+            font-size: 13px;
+        }
+        .job.failed { border-color: #a33; }
+        .job.completed { border-color: #4CAF50; }
+        .job-head {
+            display: flex;
+            justify-content: space-between;
+            gap: 10px;
+        }
+        .job-label { font-weight: 600; }
+        .job-note {
+            margin-top: 4px;
+            color: #aaa;
+            overflow-wrap: anywhere;
+        }
+        .job-bar {
+            height: 4px;
+            margin-top: 8px;
+            border-radius: 2px;
+            background-color: #3a3a3a;
+            overflow: hidden;
+        }
+        .job-bar span {
+            display: block;
+            height: 100%;
+            background-color: #4CAF50;
+            transition: width .3s ease;
+        }
+        .pagination {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin: 20px 0 10px;
+            color: #bbb;
+            font-size: 14px;
+        }
+        .pagination a {
+            padding: 8px 14px;
+            border: 2px solid #444;
+            border-radius: 8px;
+            background-color: #333;
+            color: #f0f0f0;
+            text-decoration: none;
+        }
+        .pagination a:hover { background-color: #3d3d3d; }
+        .pagination a:focus-visible {
+            outline: 2px solid #4CAF50;
+            outline-offset: 2px;
+        }
+        .search-form {
+            display: flex;
+            gap: 6px;
+        }
+        .clear-button {
+            background-color: #333;
+            color: #ddd;
+            border: 2px solid #444;
+        }
+        .tag-bar {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 6px;
+            max-width: 900px;
+            margin-bottom: 15px;
+        }
+        .tag-chip {
+            padding: 4px 10px;
+            border: 1px solid #444;
+            border-radius: 999px;
+            background-color: #262626;
+            color: #ccc;
+            font-size: 13px;
+            text-decoration: none;
+            white-space: nowrap;
+        }
+        .tag-chip:hover { background-color: #333; }
+        .tag-chip.selected {
+            background-color: #4CAF50;
+            border-color: #4CAF50;
+            color: #fff;
+        }
+        .tag-chip .count { color: #888; }
+        .tag-chip.selected .count { color: #e8f5e9; }
+        .tag-chip:focus-visible {
+            outline: 2px solid #4CAF50;
+            outline-offset: 2px;
         }
     </style>
 </head>
 <body>
+    {# Defined before anything uses it: Jinja renders top to bottom, so a macro
+       declared further down is simply undefined at the point of the call. #}
+    {%- macro view_context() -%}
+    sort={{ current_sort }}{% if current_query %}&q={{ current_query | urlencode }}{% endif %}{% for tag in selected_tags %}&tag={{ tag | urlencode }}{% endfor %}
+    {%- endmacro %}
+
     {# Folder names come from the filesystem. They are passed through data
        attributes rather than an inline onclick handler, because HTML escaping
        does not make a value safe inside a JavaScript string. #}
@@ -138,31 +270,110 @@
         <select id="sortDropdown" class="sort-dropdown" aria-label="Sort videos">
           <option value="newest" {% if current_sort == "newest" %}selected{% endif %}>Sort by Newest</option>
           <option value="title" {% if current_sort == "title" %}selected{% endif %}>Sort by Title</option>
+          <option value="longest" {% if current_sort == "longest" %}selected{% endif %}>Sort by Longest</option>
+          <option value="largest" {% if current_sort == "largest" %}selected{% endif %}>Sort by Largest</option>
         </select>
 
-        <input type="text" id="videoUrl" class="url-input" placeholder="Video URL (webm/mp4) or booru post page">
+        {# A plain GET form, so a filtered view is a real URL the user can
+           bookmark, share or reload. The sort and any selected tags ride
+           along as hidden fields rather than being dropped on search. #}
+        <form class="search-form" method="get" action="/" role="search">
+            <input type="search" name="q" class="url-input" value="{{ current_query }}"
+                   placeholder="Search titles, descriptions, tags" aria-label="Search videos">
+            <input type="hidden" name="sort" value="{{ current_sort }}">
+            {% for tag in selected_tags %}
+            <input type="hidden" name="tag" value="{{ tag }}">
+            {% endfor %}
+            <button type="submit" class="download-button">Search</button>
+        </form>
+
+        {% if is_filtered %}
+        <a href="/?sort={{ current_sort }}"><button type="button" class="clear-button">Clear filters</button></a>
+        {% endif %}
+
+        <input type="text" id="videoUrl" class="url-input" placeholder="Video URL or booru post page">
         <button type="button" id="downloadButton" class="download-button">Download</button>
+
+        <button type="button" id="rescanButton" class="clear-button">Rescan</button>
+
+        {% if auth_enabled %}
+        <button type="button" id="logoutButton" class="clear-button">Sign out</button>
+        {% endif %}
     </div>
 
+    {# Selected tags first so the active filter is always visible, even when it
+       is not among the most-used tags shown below it. #}
+    {% if available_tags or selected_tags %}
+    <div class="tag-bar">
+        {% for tag in selected_tags %}
+        <a class="tag-chip selected"
+           href="/?sort={{ current_sort }}{% if current_query %}&q={{ current_query | urlencode }}{% endif %}{% for other in selected_tags if other != tag %}&tag={{ other | urlencode }}{% endfor %}"
+           title="Remove this tag">{{ tag }} &times;</a>{# built inline: this link is the context minus one tag #}
+        {% endfor %}
+        {% for tag, count in available_tags %}
+        {% if tag not in selected_tags %}
+        <a class="tag-chip"
+           href="/?{{ view_context() }}&tag={{ tag | urlencode }}">{{ tag }} <span class="count">{{ count }}</span></a>
+        {% endif %}
+        {% endfor %}
+    </div>
+    {% endif %}
+
     <div class="status" id="status" role="status" data-scan-task="{{ scan_task_id or '' }}"></div>
+
+    {# Every job this server is running, not just the one this tab started. #}
+    <div class="tray" id="tray" aria-live="polite"></div>
 
     <div class="container" id="videoContainer">
         {% for video in video_files %}
         <div class="video-box{% if not video.has_audio %} no-audio{% endif %}">
-            <a href="/play/{{ video.id }}">
+            {# The player is given the grid's sort and filter so its next and
+               previous steps follow what the user is actually looking at. #}
+            <a href="/play/{{ video.id }}?{{ view_context() }}">
                 {% if video.thumbnail %}
-                <img src="{{ video.thumbnail }}?t={{ timestamp }}" class="thumbnail" alt="{{ video.title }}">
+                <img src="{{ video.thumbnail }}?t={{ timestamp }}" class="thumbnail"
+                     alt="{{ video.title }}" loading="lazy" decoding="async">
                 {% else %}
                 <span class="thumbnail-missing">No thumbnail</span>
                 {% endif %}
             </a>
-            <div class="video-title">{{ video.title }}</div>
+            {# Overlaid on the thumbnail rather than given their own row, so
+               adding them does not change the grid's tile geometry. #}
+            {% if video.duration_label or video.resolution_label %}
+            <div class="badges">
+                {% if video.duration_label %}<span class="badge">{{ video.duration_label }}</span>{% endif %}
+                {% if video.resolution_label %}<span class="badge">{{ video.resolution_label }}</span>{% endif %}
+            </div>
+            {% endif %}
+            <div class="video-title" title="{{ video.title }}{% if video.size_label %} ({{ video.size_label }}){% endif %}">{{ video.title }}</div>
         </div>
         {% endfor %}
     </div>
 
+    {% macro page_link(number) -%}
+    /?{{ view_context() }}&page={{ number }}
+    {%- endmacro %}
+
+    {% if page.pages > 1 %}
+    <nav class="pagination" aria-label="Catalogue pages">
+        {% if page.has_previous %}
+        <a href="{{ page_link(page.page - 1) }}" rel="prev">&larr; Previous</a>
+        {% endif %}
+        <span>{{ page.first_index }}&ndash;{{ page.last_index }} of {{ page.total }}</span>
+        {% if page.has_next %}
+        <a href="{{ page_link(page.page + 1) }}" rel="next">Next &rarr;</a>
+        {% endif %}
+    </nav>
+    {% endif %}
+
     {% if not video_files %}
-    <p class="empty">No videos in this folder yet.</p>
+    <p class="empty">
+        {% if is_filtered %}
+        Nothing matches that search in this folder.
+        {% else %}
+        No videos in this folder yet.
+        {% endif %}
+    </p>
     {% endif %}
 
     <script>
@@ -176,6 +387,8 @@
                 converting: 'Converting...',
                 generating_thumbnail: 'Creating thumbnail...',
                 scanning: 'Scanning library...',
+                searching: 'Searching booru...',
+                importing: 'Importing posts...',
                 in_progress: 'Working...'
             };
 
@@ -232,6 +445,8 @@
 
             // Sorting is a display concern: a query parameter, no POST and no
             // shared server-side preference.
+            // Rebuilding from the current URL keeps q and every selected tag
+            // in place; changing the sort must not silently clear the filter.
             document.getElementById('sortDropdown').addEventListener('change', (event) => {
                 const url = new URL(window.location.href);
                 url.searchParams.set('sort', event.target.value);
@@ -260,11 +475,16 @@
                     }
 
                     const { task_id: taskId } = await response.json();
-                    await pollTask(taskId, (task) => {
+                    const finished = await pollTask(taskId, (task) => {
                         downloadButton.textContent = LABELS[task.status] || 'Working...';
                         statusEl.textContent = task.progress ? `${task.progress}%` : '';
                     });
 
+                    // A batch import reports what it actually did; a single
+                    // download has nothing to say beyond having worked.
+                    if (finished && finished.detail) {
+                        alert(finished.detail);
+                    }
                     window.location.href = '/';
                 } catch (error) {
                     alert(error.message);
@@ -275,12 +495,121 @@
                 }
             }
 
+            document.getElementById('rescanButton').addEventListener('click', async (event) => {
+                const button = event.currentTarget;
+                button.disabled = true;
+                try {
+                    const response = await fetch('/api/scan', { method: 'POST' });
+                    if (!response.ok) {
+                        const problem = await response.json().catch(() => ({}));
+                        throw new Error(problem.detail || 'Could not start a scan.');
+                    }
+                    // The tray takes it from here and reloads when it finishes.
+                    refreshTray();
+                } catch (error) {
+                    alert(error.message);
+                } finally {
+                    button.disabled = false;
+                }
+            });
+
+            const logoutButton = document.getElementById('logoutButton');
+            if (logoutButton) {
+                logoutButton.addEventListener('click', async () => {
+                    await fetch('/logout', { method: 'POST' }).catch(() => {});
+                    window.location.href = '/login';
+                });
+            }
+
             downloadButton.addEventListener('click', startDownload);
             urlInput.addEventListener('keydown', (event) => {
                 if (event.key === 'Enter') {
                     startDownload();
                 }
             });
+
+            // --- job tray -------------------------------------------------
+            //
+            // Polls the whole registry rather than one task id, so a download
+            // or import started in another tab is visible here too.
+
+            const tray = document.getElementById('tray');
+            const KINDS = { download: 'Download', import: 'Booru import', scan: 'Library scan' };
+
+            // Finished jobs linger briefly so a result is not missed, then
+            // stop being drawn; the server expires them on its own schedule.
+            const SHOW_FINISHED_FOR_SECONDS = 20;
+            const TRAY_INTERVAL_MS = 2000;
+
+            let trayActive = 0;
+
+            function renderJob(task) {
+                const node = document.createElement('div');
+                node.className = `job ${task.status}`;
+
+                const head = document.createElement('div');
+                head.className = 'job-head';
+
+                const label = document.createElement('span');
+                label.className = 'job-label';
+                label.textContent = KINDS[task.kind] || 'Job';
+                head.appendChild(label);
+
+                const state = document.createElement('span');
+                state.textContent = LABELS[task.status] || task.status;
+                head.appendChild(state);
+                node.appendChild(head);
+
+                const note = task.error || task.detail;
+                if (note) {
+                    const noteEl = document.createElement('div');
+                    noteEl.className = 'job-note';
+                    // textContent, not innerHTML: the note can carry a video
+                    // title, which is user-controlled text.
+                    noteEl.textContent = note;
+                    node.appendChild(noteEl);
+                }
+
+                if (task.active) {
+                    const bar = document.createElement('div');
+                    bar.className = 'job-bar';
+                    const fill = document.createElement('span');
+                    fill.style.width = `${Math.max(2, task.progress || 0)}%`;
+                    bar.appendChild(fill);
+                    node.appendChild(bar);
+                }
+
+                return node;
+            }
+
+            async function refreshTray() {
+                let tasks;
+                try {
+                    const response = await fetch('/api/tasks');
+                    if (!response.ok) {
+                        return;
+                    }
+                    ({ tasks } = await response.json());
+                } catch (error) {
+                    return;   // A transient failure is not worth reporting here.
+                }
+
+                const visible = tasks.filter((task) =>
+                    task.active || task.finished_age < SHOW_FINISHED_FOR_SECONDS);
+
+                tray.replaceChildren(...visible.map(renderJob));
+
+                // Something finished since the last poll. If this tab is not
+                // the one driving a download, its grid is now stale.
+                const active = visible.filter((task) => task.active).length;
+                if (active < trayActive && !downloadButton.disabled) {
+                    window.location.reload();
+                }
+                trayActive = active;
+            }
+
+            refreshTray();
+            setInterval(refreshTray, TRAY_INTERVAL_MS);
 
             // Report the startup scan, if one is still running, without
             // blocking the catalogue from rendering.

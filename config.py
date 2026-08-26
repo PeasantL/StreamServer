@@ -36,14 +36,38 @@ DEFAULTS: dict[str, Any] = {
     "trusted_proxies": [],
     "ffmpeg_timeout": 30,
     "convert_timeout": 3600,
+    # Encoder used when a source genuinely has to be re-encoded. Set to a
+    # hardware encoder (h264_nvenc, h264_qsv, h264_videotoolbox) if the host
+    # has one; the default is the software encoder ffmpeg always ships with.
+    "video_encoder": "libx264",
+    # Optional ffmpeg hardware decoder (cuda, qsv, vaapi, videotoolbox).
+    # Applied only when frames are actually being re-encoded.
+    "hwaccel": "",
     "thumbnail_width": 320,
+    # Videos per page in the catalogue grid. 0 disables paging entirely.
+    "page_size": 60,
     "max_download_bytes": 8 * 1024 * 1024 * 1024,
     "download_timeout": 30,
+    # Most posts a single booru tag-search import will fetch.
+    "import_limit": 20,
+    # Set true to allow the same video to be downloaded into a folder twice.
+    "allow_duplicates": False,
     # Gelbooru has required credentials on its JSON API since 2024. Leave them
     # empty and booru resolution falls back to reading the post page, which
     # still exposes the original file link.
     "gelbooru_api_key": "",
     "gelbooru_user_id": "",
+    # Optional shared password. Empty disables authentication entirely, which
+    # is the default: the IP allowlist alone is the previous behaviour.
+    "auth_password": "",
+    # Key used to sign session cookies. Empty generates one per process, so
+    # sessions do not survive a restart. A hardcoded default would be worse:
+    # anyone could forge a session against any deployment.
+    "session_secret": "",
+    "session_ttl": 30 * 24 * 3600,
+    # Only set true behind HTTPS; a Secure cookie is never sent over http and
+    # the login would silently never take.
+    "session_cookie_secure": False,
     "host": "0.0.0.0",
     "port": 6969,
 }
@@ -58,11 +82,20 @@ ENV_KEYS = {
     "TRUSTED_PROXIES": "trusted_proxies",
     "FFMPEG_TIMEOUT": "ffmpeg_timeout",
     "CONVERT_TIMEOUT": "convert_timeout",
+    "VIDEO_ENCODER": "video_encoder",
+    "HWACCEL": "hwaccel",
     "THUMBNAIL_WIDTH": "thumbnail_width",
+    "PAGE_SIZE": "page_size",
     "MAX_DOWNLOAD_BYTES": "max_download_bytes",
     "DOWNLOAD_TIMEOUT": "download_timeout",
+    "IMPORT_LIMIT": "import_limit",
+    "ALLOW_DUPLICATES": "allow_duplicates",
     "GELBOORU_API_KEY": "gelbooru_api_key",
     "GELBOORU_USER_ID": "gelbooru_user_id",
+    "AUTH_PASSWORD": "auth_password",
+    "SESSION_SECRET": "session_secret",
+    "SESSION_TTL": "session_ttl",
+    "SESSION_COOKIE_SECURE": "session_cookie_secure",
     "HOST": "host",
     "PORT": "port",
 }
@@ -79,11 +112,20 @@ class Settings:
     trusted_proxies: tuple[str, ...]
     ffmpeg_timeout: int
     convert_timeout: int
+    video_encoder: str
+    hwaccel: str
     thumbnail_width: int
+    page_size: int
     max_download_bytes: int
     download_timeout: int
+    import_limit: int
+    allow_duplicates: bool
     gelbooru_api_key: str
     gelbooru_user_id: str
+    auth_password: str
+    session_secret: str
+    session_ttl: int
+    session_cookie_secure: bool
     host: str
     port: int
 
@@ -159,11 +201,20 @@ def load_settings(config_file: str | os.PathLike[str] | None = None) -> Settings
         ),
         ffmpeg_timeout=int(values["ffmpeg_timeout"]),
         convert_timeout=int(values["convert_timeout"]),
+        video_encoder=str(values["video_encoder"]) or "libx264",
+        hwaccel=str(values["hwaccel"]),
         thumbnail_width=int(values["thumbnail_width"]),
+        page_size=max(0, int(values["page_size"])),
         max_download_bytes=int(values["max_download_bytes"]),
         download_timeout=int(values["download_timeout"]),
+        import_limit=max(1, min(100, int(values["import_limit"]))),
+        allow_duplicates=bool(values["allow_duplicates"]),
         gelbooru_api_key=str(values["gelbooru_api_key"]),
         gelbooru_user_id=str(values["gelbooru_user_id"]),
+        auth_password=str(values["auth_password"]),
+        session_secret=str(values["session_secret"]),
+        session_ttl=max(60, int(values["session_ttl"])),
+        session_cookie_secure=bool(values["session_cookie_secure"]),
         host=str(values["host"]),
         port=int(values["port"]),
     )
