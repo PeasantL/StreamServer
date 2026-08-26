@@ -503,22 +503,24 @@ async def download_video(payload: DownloadRequest, background_tasks: BackgroundT
             detail = f"URL must point at a video file ({supported})."
         raise HTTPException(status_code=400, detail=detail)
 
-    try:
-        downloads.assert_safe_url(url)
-    except downloads.UnsafeURLError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from None
-
     directory = database.current_dir()
 
-    # The cheap half of duplicate detection: if this exact file URL or booru
-    # post is already catalogued here, say so now rather than after spending a
-    # download and a transcode discovering it.
+    # The cheap half of duplicate detection, and it runs before the SSRF guard
+    # on purpose: both are string comparisons against rows we already hold,
+    # while assert_safe_url does a DNS lookup. Checking first means a URL
+    # already in the folder is answered without touching the network, and
+    # reports "already here" rather than whatever the resolver had to say.
     existing = database.find_duplicate(directory, source_url=url, page_url=page_url)
     if existing is not None and not settings.allow_duplicates:
         raise HTTPException(
             status_code=409,
             detail=f"Already in this folder as {existing.get('title') or existing['id']!r}.",
         )
+
+    try:
+        downloads.assert_safe_url(url)
+    except downloads.UnsafeURLError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
 
     task_id = registry.create("download")
     background_tasks.add_task(

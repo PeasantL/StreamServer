@@ -211,6 +211,21 @@ def test_a_repeated_direct_url_is_refused_before_downloading(client, app_env, mo
     assert "Title a" in response.json()["detail"]
 
 
+def test_a_repeated_url_is_refused_without_a_dns_lookup(client, app_env, monkeypatch):
+    """Both checks are string comparisons; only assert_safe_url touches the network."""
+    test_client, main = client
+    _add(app_env, "a", source_url="https://example.invalid/clip.mp4")
+
+    def fail(url):
+        raise AssertionError("assert_safe_url should not run for a known duplicate")
+
+    monkeypatch.setattr(main.downloads, "assert_safe_url", fail)
+
+    response = test_client.post("/api/download", json={"url": "https://example.invalid/clip.mp4"})
+
+    assert response.status_code == 409
+
+
 def test_a_repeated_booru_post_is_refused(client, app_env, monkeypatch):
     test_client, main = client
     post = "https://gelbooru.com/index.php?page=post&s=view&id=42"

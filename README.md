@@ -7,8 +7,9 @@ can seek.
 
 > **Security note.** The IP allowlist is a network filter, not authentication.
 > Anyone who can reach the port from an allowed address can download, rename and
-> delete videos. Run it on a LAN or behind a VPN. Do not expose it to the
-> internet.
+> delete videos. Set `auth_password` to require a password as well — see
+> [Authentication](#authentication). Run it on a LAN or behind a VPN. Do not
+> expose it to the internet.
 
 ## Requirements
 
@@ -51,8 +52,17 @@ Values resolve highest-precedence first: environment variable, then
 | `ffmpeg_timeout` | `FFMPEG_TIMEOUT` | `30` | Seconds allowed for a thumbnail or probe. |
 | `convert_timeout` | `CONVERT_TIMEOUT` | `3600` | Seconds allowed for one WebM→MP4 transcode. |
 | `thumbnail_width` | `THUMBNAIL_WIDTH` | `320` | Maximum thumbnail width in pixels. |
+| `page_size` | `PAGE_SIZE` | `60` | Videos per page in the grid; `0` shows them all. |
+| `video_encoder` | `VIDEO_ENCODER` | `libx264` | Encoder used when a file must be re-encoded. |
+| `hwaccel` | `HWACCEL` | *(empty)* | ffmpeg hardware decoder (`cuda`, `qsv`, `vaapi`, `videotoolbox`). |
 | `max_download_bytes` | `MAX_DOWNLOAD_BYTES` | `8589934592` | Ceiling on a single remote download. |
 | `download_timeout` | `DOWNLOAD_TIMEOUT` | `30` | Seconds allowed for a remote request. |
+| `import_limit` | `IMPORT_LIMIT` | `20` | Most posts one booru tag-search import will fetch. |
+| `allow_duplicates` | `ALLOW_DUPLICATES` | `false` | Allow the same video to be added to a folder twice. |
+| `auth_password` | `AUTH_PASSWORD` | *(empty)* | Shared password. Empty disables authentication. |
+| `session_secret` | `SESSION_SECRET` | *(empty)* | Key signing session cookies; empty generates one per process. |
+| `session_ttl` | `SESSION_TTL` | `2592000` | Session lifetime in seconds (30 days). |
+| `session_cookie_secure` | `SESSION_COOKIE_SECURE` | `false` | Set true only behind HTTPS. |
 | `gelbooru_api_key` | `GELBOORU_API_KEY` | *(empty)* | Optional Gelbooru API key; see Booru post pages. |
 | `gelbooru_user_id` | `GELBOORU_USER_ID` | *(empty)* | Optional Gelbooru user id, paired with the key. |
 | `host` / `port` | `HOST` / `PORT` | `0.0.0.0` / `6969` | Listen address. |
@@ -69,12 +79,70 @@ Leave `trusted_proxies` empty and the header is ignored entirely. Set it to your
 reverse proxy's address and the last hop that proxy appended is used as the
 client address.
 
+## Browsing
+
+The grid is paged at `page_size` videos and each tile shows the duration and
+resolution over its thumbnail. The toolbar sorts by newest, title, longest or
+largest, and filters two ways:
+
+- **Search** (`?q=`) matches a substring of the title, description or any tag.
+- **Tag chips** (`?tag=`, repeatable) narrow *conjunctively* — a second tag
+  shows fewer videos, not more. Tags imported from a booru make this useful
+  immediately; see [Booru post pages](#booru-post-pages).
+
+Both are query parameters, so a filtered view is a URL you can bookmark or
+share. Sorting, paging and opening a video all preserve the active filter.
+
+**Rescan** re-reads the current folder, for files copied in while the server
+was running. The tray in the corner shows every job this server is running —
+downloads, imports and scans — including ones started in another tab.
+
+### Playing
+
+Previous and Next step through videos in the order the grid was showing, under
+the same filter. Keyboard shortcuts:
+
+| Key | Action | Key | Action |
+| --- | --- | --- | --- |
+| <kbd>space</kbd> / <kbd>k</kbd> | play / pause | <kbd>m</kbd> | mute |
+| <kbd>←</kbd> <kbd>→</kbd> | seek ±5s | <kbd>f</kbd> | fullscreen |
+| <kbd>↑</kbd> <kbd>↓</kbd> | volume | <kbd>n</kbd> / <kbd>p</kbd> | next / previous |
+| <kbd>esc</kbd> | back to the grid | | |
+
+**Edit** changes the title, description and tags together. Earlier this was a
+rename prompt that sent an empty description and tag list along with the new
+title, silently destroying both.
+
+### Subtitles
+
+A `.srt` or `.vtt` file sitting next to a video, with the same name, is picked
+up automatically. Browsers accept only WebVTT, so SubRip is converted when
+served — the header and the timecode separator, nothing else. A `.vtt` wins
+over a `.srt` when both are present.
+
+## Formats
+
+The catalogue serves MP4. Anything else in the library folder — `.webm`,
+`.mkv`, `.mov`, `.avi`, `.m4v`, `.flv`, `.wmv`, `.ts`, `.mpg`, `.mpeg`,
+`.ogv` — is converted on scan and the untouched original is moved into
+`original_webm/` beside it.
+
+Conversion decides per stream. A source already holding H.264 video is
+**remuxed**, not re-encoded, which takes seconds rather than minutes; an MKV
+with H.264 video and Opus audio copies the video and re-encodes only the
+audio. Set `video_encoder` and `hwaccel` if the host has a hardware encoder
+worth using.
+
 ## Remote downloads
 
-`POST /api/download` fetches a `.mp4` or `.webm` URL. Only `http` and `https`
-are accepted, hostnames resolving to private, loopback or link-local addresses
-are refused (including across redirects), and the download stops at
-`max_download_bytes`.
+`POST /api/download` fetches a video URL. Only `http` and `https` are accepted,
+hostnames resolving to private, loopback or link-local addresses are refused
+(including across redirects), and the download stops at `max_download_bytes`.
+
+A video already in the folder is not fetched twice. A repeated file URL or
+booru post is refused immediately; a file that turns out to be byte-identical
+to one already stored is dropped after downloading but before transcoding.
+Set `allow_duplicates` to turn this off.
 
 ### Booru post pages
 
@@ -104,10 +172,57 @@ file URL must live on the booru's own domain. Post pages carry user-written
 comments, and a comment containing a plausible-looking media URL must not be
 able to redirect the fetch somewhere else.
 
+A post's own tags come across with it, so an imported video is searchable and
+filterable straight away. Posts resolved by page scrape rather than by API
+arrive untagged.
+
 Gelbooru requires credentials on its JSON API. Set `gelbooru_api_key` and
 `gelbooru_user_id` (or `GELBOORU_API_KEY` / `GELBOORU_USER_ID`) from *Account
 → Options → API Access Credentials* to use it; without them gelbooru falls
 back to reading the post page, which usually still works.
+
+### Booru tag searches
+
+The same box also takes a tag-search URL and imports the video posts it
+matches, up to `import_limit`:
+
+| Site | URL to paste |
+| --- | --- |
+| Danbooru | `https://danbooru.donmai.us/posts?tags=blue_hair+video` |
+| Gelbooru | `https://gelbooru.com/index.php?page=post&s=list&tags=animated` |
+| rule34.xxx | `https://rule34.xxx/index.php?page=post&s=list&tags=webm` |
+| Safebooru | `https://safebooru.org/index.php?page=post&s=list&tags=cat` |
+
+Image posts are filtered out at search time, so the job fetches only what it
+will keep. Posts are fetched one at a time — a booru will rate-limit a client
+that opens a dozen connections at once. One post failing does not abandon the
+rest; the job reports how many were added, already present and failed.
+
+rule34.us has no search API, so only its single post pages work.
+
+Gelbooru's search API needs the credentials above; without them it answers an
+unauthenticated search with an empty result rather than an error, and the job
+says so.
+
+## Authentication
+
+Off by default: leave `auth_password` empty and the IP allowlist is the only
+gate, exactly as before. Set it and every page and API call needs a session.
+
+```bash
+AUTH_PASSWORD='a long passphrase'
+SESSION_SECRET='any long random string'   # else sessions end at each restart
+```
+
+This layers *behind* the allowlist rather than replacing it — a blocked address
+never reaches the password prompt. It is what makes reaching the server over a
+VPN or a tunnel defensible, where every peer shares one source address.
+
+The session is a signed cookie carrying an expiry, `HttpOnly` and
+`SameSite=Lax`. Failed attempts are throttled per address. `/healthz` stays
+open so the container health check keeps working. Set `session_cookie_secure`
+only behind HTTPS — a `Secure` cookie is never sent over plain http, and the
+login would silently never take.
 
 ## Development
 
@@ -118,8 +233,11 @@ pytest
 ```
 
 Tests cover the Range parser, the IP allowlist and forwarded-header handling,
-path containment, the SSRF guard, booru URL resolution, and concurrent database
-writes. They do not require ffmpeg or a network connection.
+path containment, the SSRF guard, booru URL and tag-search resolution, partial
+metadata updates, search and tag filtering, pagination, media probing, the
+remux decision, duplicate detection, session authentication, the job registry,
+player neighbours, subtitle conversion, and concurrent database writes. They do
+not require ffmpeg or a network connection.
 
 ## Licence
 
