@@ -252,6 +252,12 @@
     </style>
 </head>
 <body>
+    {# Defined before anything uses it: Jinja renders top to bottom, so a macro
+       declared further down is simply undefined at the point of the call. #}
+    {%- macro view_context() -%}
+    sort={{ current_sort }}{% if current_query %}&q={{ current_query | urlencode }}{% endif %}{% for tag in selected_tags %}&tag={{ tag | urlencode }}{% endfor %}
+    {%- endmacro %}
+
     {# Folder names come from the filesystem. They are passed through data
        attributes rather than an inline onclick handler, because HTML escaping
        does not make a value safe inside a JavaScript string. #}
@@ -302,12 +308,12 @@
         {% for tag in selected_tags %}
         <a class="tag-chip selected"
            href="/?sort={{ current_sort }}{% if current_query %}&q={{ current_query | urlencode }}{% endif %}{% for other in selected_tags if other != tag %}&tag={{ other | urlencode }}{% endfor %}"
-           title="Remove this tag">{{ tag }} &times;</a>
+           title="Remove this tag">{{ tag }} &times;</a>{# built inline: this link is the context minus one tag #}
         {% endfor %}
         {% for tag, count in available_tags %}
         {% if tag not in selected_tags %}
         <a class="tag-chip"
-           href="/?sort={{ current_sort }}{% if current_query %}&q={{ current_query | urlencode }}{% endif %}{% for other in selected_tags %}&tag={{ other | urlencode }}{% endfor %}&tag={{ tag | urlencode }}">{{ tag }} <span class="count">{{ count }}</span></a>
+           href="/?{{ view_context() }}&tag={{ tag | urlencode }}">{{ tag }} <span class="count">{{ count }}</span></a>
         {% endif %}
         {% endfor %}
     </div>
@@ -321,7 +327,9 @@
     <div class="container" id="videoContainer">
         {% for video in video_files %}
         <div class="video-box{% if not video.has_audio %} no-audio{% endif %}">
-            <a href="/play/{{ video.id }}">
+            {# The player is given the grid's sort and filter so its next and
+               previous steps follow what the user is actually looking at. #}
+            <a href="/play/{{ video.id }}?{{ view_context() }}">
                 {% if video.thumbnail %}
                 <img src="{{ video.thumbnail }}?t={{ timestamp }}" class="thumbnail"
                      alt="{{ video.title }}" loading="lazy" decoding="async">
@@ -343,7 +351,7 @@
     </div>
 
     {% macro page_link(number) -%}
-    /?sort={{ current_sort }}{% if current_query %}&q={{ current_query | urlencode }}{% endif %}{% for tag in selected_tags %}&tag={{ tag | urlencode }}{% endfor %}&page={{ number }}
+    /?{{ view_context() }}&page={{ number }}
     {%- endmacro %}
 
     {% if page.pages > 1 %}

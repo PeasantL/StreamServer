@@ -118,6 +118,63 @@ def get_sibling_folders(directory: Path | None = None) -> list[str]:
         return []
 
 
+# --- subtitles ---------------------------------------------------------------
+
+# Browsers play WebVTT and nothing else through <track>. SubRip is what people
+# actually have on disk, so it is converted on the way out.
+SUBTITLE_EXTENSIONS = (".vtt", ".srt")
+
+# "00:00:01,000 --> 00:00:04,000", the one line where SubRip and WebVTT differ
+# in a way that matters: WebVTT wants a decimal point, not a comma.
+_SRT_TIMECODE_RE = re.compile(
+    r"^(\d{1,3}:\d{2}:\d{2}),(\d{1,3})\s*-->\s*(\d{1,3}:\d{2}:\d{2}),(\d{1,3})(.*)$"
+)
+
+
+def subtitle_path(video: dict[str, Any]) -> Path | None:
+    """A sidecar subtitle file sitting next to the video, if there is one.
+
+    ``.vtt`` wins over ``.srt`` when both exist: it needs no conversion, so
+    whatever it contains is what the browser will actually see.
+    """
+    try:
+        source = video_path(video)
+    except UnsafePathError:
+        return None
+
+    for extension in SUBTITLE_EXTENSIONS:
+        try:
+            candidate = resolve_within(source.parent, f"{source.stem}{extension}")
+        except UnsafePathError:
+            continue
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def to_webvtt(text: str) -> str:
+    """Convert SubRip to WebVTT, or pass WebVTT through unchanged.
+
+    Only two things have to change for a browser to accept the result: the
+    ``WEBVTT`` header, and the comma before the milliseconds. Cue text is left
+    exactly as it was -- rewriting it would be a good way to lose formatting
+    for no benefit.
+    """
+    if text.lstrip("\ufeff").lstrip().startswith("WEBVTT"):
+        return text.lstrip("\ufeff")
+
+    lines = []
+    for line in text.lstrip("\ufeff").splitlines():
+        match = _SRT_TIMECODE_RE.match(line.strip())
+        if match:
+            start, start_ms, end, end_ms, rest = match.groups()
+            lines.append(f"{start}.{start_ms} --> {end}.{end_ms}{rest}")
+        else:
+            lines.append(line)
+
+    return "WEBVTT\n\n" + "\n".join(lines)
+
+
 # --- content hashing ---------------------------------------------------------
 
 DIGEST_CHUNK_SIZE = 1024 * 1024
@@ -715,25 +772,20 @@ def _view_model(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def browse_videos(
+def ordered_rows(
     sort_by: str = "newest",
     directory: Path | None = None,
     query: str = "",
     tags: Sequence[str] = (),
-    page: int = 1,
-    page_size: int | None = None,
-) -> VideoPage:
-    """Filter, sort and page the catalogue for one directory.
+) -> list[dict[str, Any]]:
+    """Database rows matching the filter, in display order.
 
-    Rows are filtered and sorted first and only the surviving page is turned
-    into a view model, so the per-tile thumbnail stat is paid for the videos
-    actually rendered rather than for the whole library. The file-existence
-    check cannot be deferred the same way: it decides whether a row counts at
-    all, and a total that included missing files would page to empty screens.
+    Shared by the grid and by neighbour lookup so that "next video" means the
+    next one the user can actually see, under whatever sort and filter the
+    grid was showing.
     """
     directory = Path(directory or current_dir())
     query = query.strip()
-    page_size = settings.page_size if page_size is None else page_size
 
     matched = []
     for row in list_videos(directory):
@@ -752,7 +804,50 @@ def browse_videos(
 
     key, reverse = _sort_key(sort_by)
     matched.sort(key=key, reverse=reverse)
+    return matched
 
+
+def find_neighbours(
+    video_id: str,
+    sort_by: str = "newest",
+    directory: Path | None = None,
+    query: str = "",
+    tags: Sequence[str] = (),
+) -> tuple[str | None, str | None]:
+    """The ids either side of *video_id* in display order.
+
+    Returns (None, None) when the video is not in the current view at all --
+    it was deleted, or the filter excludes it -- rather than guessing at a
+    position it does not occupy.
+    """
+    rows = ordered_rows(sort_by, directory, query, tags)
+    index = next((i for i, row in enumerate(rows) if row["id"] == video_id), None)
+    if index is None:
+        return None, None
+
+    previous = rows[index - 1]["id"] if index > 0 else None
+    following = rows[index + 1]["id"] if index + 1 < len(rows) else None
+    return previous, following
+
+
+def browse_videos(
+    sort_by: str = "newest",
+    directory: Path | None = None,
+    query: str = "",
+    tags: Sequence[str] = (),
+    page: int = 1,
+    page_size: int | None = None,
+) -> VideoPage:
+    """Filter, sort and page the catalogue for one directory.
+
+    Rows are filtered and sorted first and only the surviving page is turned
+    into a view model, so the per-tile thumbnail stat is paid for the videos
+    actually rendered rather than for the whole library. The file-existence
+    check cannot be deferred the same way: it decides whether a row counts at
+    all, and a total that included missing files would page to empty screens.
+    """
+    matched = ordered_rows(sort_by, directory, query, tags)
+    page_size = settings.page_size if page_size is None else page_size
     total = len(matched)
     if page_size <= 0:
         return VideoPage([_view_model(row) for row in matched], total, 1, max(total, 1))

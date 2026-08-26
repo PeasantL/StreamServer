@@ -13,6 +13,7 @@ from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import urlencode
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
@@ -186,8 +187,40 @@ async def index(
 
 
 @app.get("/play/{video_id}")
-async def play_video(video_id: str, request: Request):
+async def play_video(
+    video_id: str,
+    request: Request,
+    sort: str = Query(default="newest"),
+    q: str = Query(default="", max_length=200),
+    tag: Annotated[list[str] | None, Query()] = None,
+):
+    """The player.
+
+    It takes the grid's sort and filter so that "next video" means the next
+    one the user could actually see, rather than the next row in the database.
+    """
     video = _get_video_or_404(video_id)
+    if sort not in SORT_OPTIONS:
+        sort = "newest"
+
+    query = q.strip()
+    selected_tags = [value.strip().casefold() for value in (tag or []) if value.strip()]
+
+    previous_id, next_id = utils.find_neighbours(
+        video_id,
+        sort_by=sort,
+        directory=database.current_dir(),
+        query=query,
+        tags=selected_tags,
+    )
+
+    # Query string shared by the back link and both neighbour links, so
+    # stepping through videos never loses the filter that framed them.
+    context = urlencode(
+        [("sort", sort)] + ([("q", query)] if query else [])
+        + [("tag", value) for value in selected_tags]
+    )
+
     return templates.TemplateResponse(
         request,
         "play_mp4.html",
@@ -196,6 +229,10 @@ async def play_video(video_id: str, request: Request):
             "video_title": video.get("title", ""),
             "video_description": video.get("description", ""),
             "video_tags": video.get("tags", []),
+            "has_subtitles": utils.subtitle_path(video) is not None,
+            "previous_url": f"/play/{previous_id}?{context}" if previous_id else "",
+            "next_url": f"/play/{next_id}?{context}" if next_id else "",
+            "back_url": f"/?{context}",
         },
     )
 
@@ -301,6 +338,31 @@ async def stream_video(video_id: str, range: str | None = Header(default=None)):
             "Content-Length": str(end - start + 1),
             "Content-Type": mime_type,
         },
+    )
+
+
+@app.get("/videos/{video_id}/subtitles")
+async def video_subtitles(video_id: str):
+    """A sidecar subtitle track, served as WebVTT.
+
+    SubRip is what people have on disk and WebVTT is the only thing a browser
+    will accept through <track>, so the conversion happens here rather than
+    asking anyone to convert their files.
+    """
+    video = _get_video_or_404(video_id)
+    path = utils.subtitle_path(video)
+    if path is None:
+        raise HTTPException(status_code=404, detail="No subtitles for this video.")
+
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        log.warning("Could not read subtitles %s: %s", path, exc)
+        raise HTTPException(status_code=404, detail="No subtitles for this video.") from None
+
+    return Response(
+        content=utils.to_webvtt(text),
+        media_type="text/vtt; charset=utf-8",
     )
 
 

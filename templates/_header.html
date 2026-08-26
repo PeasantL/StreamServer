@@ -7,8 +7,19 @@
      data-video-id="{{ video_id }}"
      data-title="{{ video_title }}"
      data-description="{{ video_description }}"
-     data-tags="{{ video_tags | join(', ') }}">
-    <button type="button" id="back-button">Go Back</button>
+     data-tags="{{ video_tags | join(', ') }}"
+     data-back-url="{{ back_url }}"
+     data-previous-url="{{ previous_url }}"
+     data-next-url="{{ next_url }}">
+    <div class="video-nav">
+        <button type="button" id="back-button">Back</button>
+        {# Disabled rather than hidden, so the controls do not shift position
+           between the first video and the rest. #}
+        <button type="button" id="prev-button" {% if not previous_url %}disabled{% endif %}
+                title="Previous (p)">&larr;</button>
+        <button type="button" id="next-button" {% if not next_url %}disabled{% endif %}
+                title="Next (n)">&rarr;</button>
+    </div>
     <div class="video-title">{{ video_title }}</div>
     <div class="video-actions">
         <button type="button" id="edit-button">Edit</button>
@@ -52,9 +63,28 @@
         const errorEl = document.getElementById('edit-error');
         const saveButton = document.getElementById('edit-save');
 
+        // A real URL rather than history.back(): arriving here from a link,
+        // a bookmark or a neighbour step should all lead back to the grid the
+        // video belongs to, with its sort and filter intact.
+        const backUrl = header.dataset.backUrl || '/';
+        const previousUrl = header.dataset.previousUrl || '';
+        const nextUrl = header.dataset.nextUrl || '';
+
         document.getElementById('back-button').addEventListener('click', function () {
-            window.history.back();
+            window.location.href = backUrl;
         });
+
+        const prevButton = document.getElementById('prev-button');
+        const nextButton = document.getElementById('next-button');
+
+        if (previousUrl) {
+            prevButton.addEventListener('click', () => { window.location.href = previousUrl; });
+        }
+        if (nextUrl) {
+            nextButton.addEventListener('click', () => { window.location.href = nextUrl; });
+        }
+
+        window.streamserver = { backUrl, previousUrl, nextUrl };
 
         function openEditor() {
             titleInput.value = header.dataset.title || '';
@@ -133,7 +163,7 @@
                     const problem = await response.json().catch(() => ({}));
                     throw new Error(problem.detail || 'Delete failed.');
                 }
-                window.location.href = '/';
+                window.location.href = backUrl;
             } catch (error) {
                 alert(error.message);
             }
@@ -157,8 +187,10 @@
       z-index: 1000;
       box-sizing: border-box;
   }
-  #back-button {
+  .video-nav {
       flex: 0 0 auto;
+      display: flex;
+      gap: 6px;
       margin-right: 10px;
   }
   .video-title {
