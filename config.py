@@ -36,6 +36,13 @@ DEFAULTS: dict[str, Any] = {
     "trusted_proxies": [],
     "ffmpeg_timeout": 30,
     "convert_timeout": 3600,
+    # Encoder used when a source genuinely has to be re-encoded. Set to a
+    # hardware encoder (h264_nvenc, h264_qsv, h264_videotoolbox) if the host
+    # has one; the default is the software encoder ffmpeg always ships with.
+    "video_encoder": "libx264",
+    # Optional ffmpeg hardware decoder (cuda, qsv, vaapi, videotoolbox).
+    # Applied only when frames are actually being re-encoded.
+    "hwaccel": "",
     "thumbnail_width": 320,
     # Videos per page in the catalogue grid. 0 disables paging entirely.
     "page_size": 60,
@@ -60,6 +67,8 @@ ENV_KEYS = {
     "TRUSTED_PROXIES": "trusted_proxies",
     "FFMPEG_TIMEOUT": "ffmpeg_timeout",
     "CONVERT_TIMEOUT": "convert_timeout",
+    "VIDEO_ENCODER": "video_encoder",
+    "HWACCEL": "hwaccel",
     "THUMBNAIL_WIDTH": "thumbnail_width",
     "PAGE_SIZE": "page_size",
     "MAX_DOWNLOAD_BYTES": "max_download_bytes",
@@ -82,6 +91,8 @@ class Settings:
     trusted_proxies: tuple[str, ...]
     ffmpeg_timeout: int
     convert_timeout: int
+    video_encoder: str
+    hwaccel: str
     thumbnail_width: int
     page_size: int
     max_download_bytes: int
@@ -163,6 +174,8 @@ def load_settings(config_file: str | os.PathLike[str] | None = None) -> Settings
         ),
         ffmpeg_timeout=int(values["ffmpeg_timeout"]),
         convert_timeout=int(values["convert_timeout"]),
+        video_encoder=str(values["video_encoder"]) or "libx264",
+        hwaccel=str(values["hwaccel"]),
         thumbnail_width=int(values["thumbnail_width"]),
         page_size=max(0, int(values["page_size"])),
         max_download_bytes=int(values["max_download_bytes"]),

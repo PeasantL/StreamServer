@@ -33,8 +33,25 @@ from database import (
 
 log = logging.getLogger(__name__)
 
+# What the catalogue serves directly. Both have a MIME type in main.MIME_TYPES
+# and both play in a browser, so neither needs converting to be usable.
 VIDEO_EXTENSIONS = (".mp4", ".webm")
-ORIGINAL_WEBM_DIRNAME = "original_webm"
+
+# Containers that are converted to MP4 on scan. WebM is here despite being
+# browser-playable because iOS refuses it, which is the reason this server
+# transcodes at all; the rest simply do not play anywhere without help.
+SOURCE_EXTENSIONS = (
+    ".webm", ".mkv", ".mov", ".avi", ".m4v", ".flv", ".wmv", ".ts", ".mpg", ".mpeg", ".ogv",
+)
+
+# Codecs an MP4 container can hold and a browser can play. A source already in
+# these needs remuxing, not re-encoding.
+MP4_SAFE_VIDEO_CODECS = frozenset({"h264", "avc1"})
+MP4_SAFE_AUDIO_CODECS = frozenset({"aac", "mp3"})
+
+# The directory name is unchanged from when only WebM was archived here, so an
+# existing library's archived originals are still found.
+ORIGINALS_DIRNAME = "original_webm"
 TIMECODE_RE = re.compile(r"^\d{1,2}:[0-5]\d:[0-5]\d(\.\d{1,3})?$")
 
 
@@ -68,8 +85,9 @@ def thumbnail_path(video_id: str) -> Path:
     return resolve_within(settings.thumbnail_dir, f"{video_id}.jpg")
 
 
-def get_original_webm_dir(directory: Path | None = None) -> Path:
-    return Path(directory or current_dir()) / ORIGINAL_WEBM_DIRNAME
+def get_originals_dir(directory: Path | None = None) -> Path:
+    """Where a converted file's untouched original is kept."""
+    return Path(directory or current_dir()) / ORIGINALS_DIRNAME
 
 
 def get_unique_filename(original_filename: str, directory: Path) -> str:
@@ -266,22 +284,69 @@ def generate_thumbnail(source: Path, destination: Path, timestamp: str = "00:00:
         raise
 
 
-def convert_to_mp4(source: Path, destination: Path) -> Path:
-    """Transcode to H.264/AAC, writing to a temp file until it succeeds."""
+def plan_conversion(info: MediaInfo) -> tuple[list[str], bool]:
+    """Codec arguments for converting a file described by *info*.
+
+    Each stream is decided separately, because they fail independently: an
+    MKV commonly holds H.264 video that an MP4 can carry untouched alongside
+    an audio track that it cannot. Copying the video and re-encoding only the
+    audio turns a minutes-long transcode into a seconds-long remux.
+
+    Returns the arguments and whether any stream is actually being encoded,
+    which is what decides if the hardware encoder settings are worth applying.
+    """
+    video_codec = (info.video_codec or "").lower()
+    audio_codec = (info.audio_codec or "").lower()
+
+    # An unreadable probe reports no video codec at all. Re-encoding is the
+    # safe answer: a copy of a stream MP4 cannot hold produces a file that
+    # fails to play, and it fails silently.
+    copy_video = video_codec in MP4_SAFE_VIDEO_CODECS
+    copy_audio = not info.has_audio or audio_codec in MP4_SAFE_AUDIO_CODECS
+
+    args = ["-c:v", "copy" if copy_video else settings.video_encoder]
+    if info.has_audio:
+        args += ["-c:a", "copy" if copy_audio else "aac"]
+
+    return args, not (copy_video and copy_audio)
+
+
+def convert_to_mp4(source: Path, destination: Path, info: MediaInfo | None = None) -> Path:
+    """Produce a browser-playable MP4, remuxing when the codecs already allow.
+
+    Writes to a temp file and moves it into place, so an interrupted run never
+    leaves a half-written video where a playable one is expected.
+    """
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     temp_path = destination.with_name(f".{destination.name}.partial.mp4")
 
-    command = [
-        "ffmpeg",
-        "-i", str(source),
-        "-c:v", "libx264",
-        "-c:a", "aac",
+    info = probe_media(source) if info is None else info
+    codec_args, encoding = plan_conversion(info)
+
+    command = ["ffmpeg"]
+    # Hardware decode helps only when frames are actually being re-encoded; on
+    # a stream copy it costs a setup round-trip and buys nothing.
+    if encoding and settings.hwaccel:
+        command += ["-hwaccel", settings.hwaccel]
+    command += ["-i", str(source)]
+    command += codec_args
+    command += [
+        # Moves the index to the front so playback can start before the whole
+        # file has arrived, which is the point of streaming it.
         "-movflags", "+faststart",
         "-y",
         "-loglevel", "error",
         str(temp_path),
     ]
+
+    log.info(
+        "Converting %s (%s/%s): %s",
+        source.name,
+        info.video_codec or "unknown",
+        info.audio_codec or "none",
+        "re-encoding" if encoding else "remuxing",
+    )
 
     try:
         subprocess.run(
@@ -332,14 +397,14 @@ def _ensure_thumbnail(video_id: str, source: Path) -> None:
         log.warning("Thumbnail generation failed for %s: %s", source, exc)
 
 
-def convert_webm_files(directory: Path) -> int:
-    """Transcode loose WebM files to MP4 and archive the originals.
+def convert_source_files(directory: Path) -> int:
+    """Convert loose non-MP4 files and archive the untouched originals.
 
-    Runs *before* the MP4 scan so a WebM is never registered under a path that
-    conversion is about to move away.
+    Runs *before* the catalogue scan so a source file is never registered
+    under a path that conversion is about to move away.
     """
     directory = Path(directory)
-    archive = get_original_webm_dir(directory)
+    archive = get_originals_dir(directory)
     converted = 0
 
     already_converted = {
@@ -349,7 +414,7 @@ def convert_webm_files(directory: Path) -> int:
     }
 
     for entry in sorted(directory.iterdir()):
-        if not entry.is_file() or entry.suffix.lower() != ".webm":
+        if not entry.is_file() or entry.suffix.lower() not in SOURCE_EXTENSIONS:
             continue
 
         archive.mkdir(parents=True, exist_ok=True)
@@ -369,6 +434,8 @@ def convert_webm_files(directory: Path) -> int:
         row = _new_row(directory, mp4_name, source_name=entry.name)
         archived = get_unique_filename(entry.name, archive)
         shutil.move(str(entry), archive / archived)
+        # The field is named for the days when only WebM was archived. It now
+        # holds whatever container the original arrived in.
         row["original_webm"] = archived
 
         add_videos_to_db([row])
@@ -413,7 +480,7 @@ def scan_library(directory: Path | None = None) -> dict[str, int]:
         log.warning("Cannot scan %s: not a directory", directory)
         return {"converted": 0, "added": 0, "pruned": 0, "backfilled": 0}
 
-    converted = convert_webm_files(directory)
+    converted = convert_source_files(directory)
 
     on_disk = {
         entry.name

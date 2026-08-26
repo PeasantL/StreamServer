@@ -321,13 +321,14 @@ async def download_video(payload: DownloadRequest, background_tasks: BackgroundT
 
     extension = downloads.url_extension(url)
     if extension not in downloads.ALLOWED_EXTENSIONS:
+        supported = ", ".join(downloads.ALLOWED_EXTENSIONS)
         if page_url is not None:
             detail = (
                 f"That post's original file is {extension or 'of an unknown type'}; "
-                "this server only stores .mp4 and .webm."
+                f"this server stores video files only ({supported})."
             )
         else:
-            detail = "URL must point at a .mp4 or .webm file."
+            detail = f"URL must point at a video file ({supported})."
         raise HTTPException(status_code=400, detail=detail)
 
     try:
@@ -388,20 +389,24 @@ def process_download_task(
 
             mp4_name = f"{video_id}.mp4"
             destination = directory / mp4_name
-            archived_webm = None
+            archived_original = None
 
-            if extension == ".webm":
+            if extension == ".mp4":
+                shutil.move(str(source), destination)
+                registry.update(task_id, progress=60)
+            else:
                 registry.update(task_id, status="converting", progress=30)
+                # Often a remux rather than a re-encode: plenty of remote MKVs
+                # and MOVs already hold H.264 that MP4 can carry untouched.
                 utils.convert_to_mp4(source, destination)
                 registry.update(task_id, progress=60)
 
-                archive = utils.get_original_webm_dir(directory)
+                archive = utils.get_originals_dir(directory)
                 archive.mkdir(parents=True, exist_ok=True)
-                archived_webm = utils.get_unique_filename(f"{video_id}_original.webm", archive)
-                shutil.move(str(source), archive / archived_webm)
-            else:
-                shutil.move(str(source), destination)
-                registry.update(task_id, progress=60)
+                archived_original = utils.get_unique_filename(
+                    f"{video_id}_original{extension}", archive
+                )
+                shutil.move(str(source), archive / archived_original)
 
             registry.update(task_id, status="generating_thumbnail", progress=80)
             try:
@@ -425,7 +430,7 @@ def process_download_task(
                     "tags": list(tags or []),
                     **utils.probe_media(destination).as_row_fields(),
                     "source_name": None,
-                    "original_webm": archived_webm,
+                    "original_webm": archived_original,
                 }
             )
 
@@ -521,7 +526,7 @@ async def delete_video(video_id: str):
     archived = video.get("original_webm")
     if archived:
         try:
-            utils.resolve_within(utils.get_original_webm_dir(directory), archived).unlink(
+            utils.resolve_within(utils.get_originals_dir(directory), archived).unlink(
                 missing_ok=True
             )
         except (utils.UnsafePathError, OSError) as exc:
