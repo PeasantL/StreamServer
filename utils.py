@@ -8,6 +8,7 @@ invocation carry a timeout, which the library did not make convenient.
 from __future__ import annotations
 
 import datetime
+import hashlib
 import json
 import logging
 import os
@@ -115,6 +116,63 @@ def get_sibling_folders(directory: Path | None = None) -> list[str]:
     except OSError as exc:
         log.warning("Cannot list sibling folders of %s: %s", parent, exc)
         return []
+
+
+# --- content hashing ---------------------------------------------------------
+
+DIGEST_CHUNK_SIZE = 1024 * 1024
+
+
+def file_digest(path: Path) -> str | None:
+    """SHA-256 of a file's bytes, or None when it cannot be read.
+
+    Read in chunks: these are video files, and loading one into memory to hash
+    it would cost more than the duplicate check saves.
+    """
+    digest = hashlib.sha256()
+    try:
+        with open(path, "rb") as handle:
+            while chunk := handle.read(DIGEST_CHUNK_SIZE):
+                digest.update(chunk)
+    except OSError as exc:
+        log.warning("Could not hash %s: %s", path, exc)
+        return None
+    return digest.hexdigest()
+
+
+def find_duplicate_groups(directory: Path) -> list[list[dict[str, Any]]]:
+    """Rows in *directory* holding byte-identical files, grouped.
+
+    Sizes are compared first and only files whose size collides are hashed.
+    Hashing a whole library would mean reading every byte of every video on
+    every scan; a size collision between different videos is rare enough that
+    this is normally close to free.
+    """
+    by_size: dict[int, list[dict[str, Any]]] = {}
+    for row in list_videos(directory):
+        source = Path(directory) / row["path"]
+        if not source.exists():
+            continue
+        size = row.get("size_bytes") or source.stat().st_size
+        by_size.setdefault(size, []).append(row)
+
+    groups = []
+    for candidates in by_size.values():
+        if len(candidates) < 2:
+            continue
+
+        by_hash: dict[str, list[dict[str, Any]]] = {}
+        for row in candidates:
+            digest = row.get("content_hash") or file_digest(Path(directory) / row["path"])
+            if digest is None:
+                continue
+            if row.get("content_hash") != digest:
+                update_video_in_db(row["id"], {"content_hash": digest}, directory)
+            by_hash.setdefault(digest, []).append(row)
+
+        groups.extend(rows for rows in by_hash.values() if len(rows) > 1)
+
+    return groups
 
 
 # --- ffmpeg ------------------------------------------------------------------
@@ -478,7 +536,7 @@ def scan_library(directory: Path | None = None) -> dict[str, int]:
     directory = Path(directory or current_dir())
     if not directory.is_dir():
         log.warning("Cannot scan %s: not a directory", directory)
-        return {"converted": 0, "added": 0, "pruned": 0, "backfilled": 0}
+        return {"converted": 0, "added": 0, "pruned": 0, "backfilled": 0, "duplicates": 0}
 
     converted = convert_source_files(directory)
 
@@ -503,15 +561,25 @@ def scan_library(directory: Path | None = None) -> dict[str, int]:
 
     filled = backfill_media_info(directory)
 
+    # Reported, never acted on. Two copies of a video can be deliberate, and
+    # deleting one on the user's behalf is not a decision a scan should make.
+    duplicate_groups = find_duplicate_groups(directory)
+    for group in duplicate_groups:
+        log.info(
+            "Duplicate content in %s: %s",
+            directory, ", ".join(row.get("title") or row["id"] for row in group),
+        )
+
     log.info(
-        "Scanned %s: %d converted, %d added, %d pruned, %d backfilled",
-        directory, converted, len(new_rows), pruned, filled,
+        "Scanned %s: %d converted, %d added, %d pruned, %d backfilled, %d duplicate group(s)",
+        directory, converted, len(new_rows), pruned, filled, len(duplicate_groups),
     )
     return {
         "converted": converted,
         "added": len(new_rows),
         "pruned": pruned,
         "backfilled": filled,
+        "duplicates": sum(len(group) - 1 for group in duplicate_groups),
     }
 
 

@@ -336,13 +336,25 @@ async def download_video(payload: DownloadRequest, background_tasks: BackgroundT
     except downloads.UnsafeURLError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
 
+    directory = database.current_dir()
+
+    # The cheap half of duplicate detection: if this exact file URL or booru
+    # post is already catalogued here, say so now rather than after spending a
+    # download and a transcode discovering it.
+    existing = database.find_duplicate(directory, source_url=url, page_url=page_url)
+    if existing is not None and not settings.allow_duplicates:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Already in this folder as {existing.get('title') or existing['id']!r}.",
+        )
+
     task_id = registry.create("download")
     background_tasks.add_task(
         process_download_task,
         task_id,
         url,
         extension,
-        database.current_dir(),
+        directory,
         page_url=page_url,
         title=title,
         tags=tags,
@@ -387,6 +399,22 @@ def process_download_task(
             with response:
                 downloads.stream_to_file(response, source, on_progress)
 
+            # The thorough half: two different URLs can serve the same file,
+            # and a booru re-upload is exactly that. Checked before the
+            # transcode, which is the expensive step worth skipping.
+            source_hash = utils.file_digest(source)
+            duplicate = database.find_duplicate(directory, source_hash=source_hash)
+            if duplicate is not None and not settings.allow_duplicates:
+                registry.update(
+                    task_id,
+                    status="failed",
+                    error=(
+                        "That file is already in this folder as "
+                        f"{duplicate.get('title') or duplicate['id']!r}."
+                    ),
+                )
+                return
+
             mp4_name = f"{video_id}.mp4"
             destination = directory / mp4_name
             archived_original = None
@@ -428,6 +456,10 @@ def process_download_task(
                     "creation_date": datetime.datetime.now().isoformat(),
                     "description": page_url or "",
                     "tags": list(tags or []),
+                    # The URL and the bytes it served, so the same video is
+                    # recognisable on a later re-download either way.
+                    "source_url": url,
+                    "source_hash": source_hash,
                     **utils.probe_media(destination).as_row_fields(),
                     "source_name": None,
                     "original_webm": archived_original,

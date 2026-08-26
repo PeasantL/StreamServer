@@ -195,6 +195,30 @@ def get_video_by_id(video_id: str, directory: Path | None = None) -> dict[str, A
         return None
 
 
+def find_duplicate(
+    directory: Path | None = None,
+    *,
+    source_url: str | None = None,
+    page_url: str | None = None,
+    source_hash: str | None = None,
+) -> dict[str, Any] | None:
+    """First row in *directory* matching any of the identities given.
+
+    Three separate ways the same video can arrive twice: the same direct file
+    URL, the same booru post page, or different URLs that turn out to serve
+    byte-identical files. Any one of them is enough to call it a duplicate.
+    """
+    with _lock:
+        for video in _rows_for(directory or current_dir()):
+            if source_url and video.get("source_url") == source_url:
+                return video
+            if page_url and video.get("description") == page_url:
+                return video
+            if source_hash and video.get("source_hash") == source_hash:
+                return video
+        return None
+
+
 def add_video_to_db(video_data: dict[str, Any]) -> dict[str, Any]:
     with _lock:
         video_data.setdefault("directory", str(current_dir()))
