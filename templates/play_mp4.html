@@ -12,11 +12,16 @@
         }
         body {
             display: flex;
-            justify-content: center;
-            align-items: center;
+            flex-direction: column;
             overflow: hidden;
         }
         .video-container {
+            /* Fills whatever the viewport leaves after the header, rather than
+               shrink-wrapping the video -- that's what lets the video below
+               grow to match it instead of sitting at a fixed 960px on a much
+               bigger screen. */
+            flex: 1;
+            min-height: 0;
             display: flex;
             justify-content: center;
             align-items: center;
@@ -25,10 +30,14 @@
             box-sizing: border-box;
         }
         video {
+            /* object-fit: contain scales to fill the available box in both
+               dimensions -- up or down -- while keeping the video's own
+               aspect ratio, so a portrait clip gets the height a fixed
+               max-width could never give it, and a landscape one still gets
+               letterboxed instead of stretched. */
             width: 100%;
-            max-width: 960px;
-            max-height: calc(100vh - 80px);
-            height: auto;      /* was a fixed 540px, which distorted on narrow screens */
+            height: 100%;
+            object-fit: contain;
             outline: none;
             background: #000;
         }
