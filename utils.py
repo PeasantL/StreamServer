@@ -16,6 +16,8 @@ import shutil
 import subprocess
 import tempfile
 import uuid
+from collections import Counter
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -323,12 +325,56 @@ def scan_library(directory: Path | None = None) -> dict[str, int]:
     return {"converted": converted, "added": len(new_rows), "pruned": pruned}
 
 
-def get_video_files(sort_by: str = "newest", directory: Path | None = None) -> list[dict[str, Any]]:
-    """Rows for the catalogue view, newest or title-sorted."""
+def matches_query(row: dict[str, Any], query: str) -> bool:
+    """True when *query* appears in the row's title, description or tags.
+
+    Matching is case-insensitive substring, across every field a user might
+    remember the video by. Tags match as substrings too, so searching "hair"
+    finds ``blue_hair`` without the user having to know the exact tag.
+    """
+    needle = query.casefold()
+    if needle in str(row.get("title") or "").casefold():
+        return True
+    if needle in str(row.get("description") or "").casefold():
+        return True
+    return any(needle in str(tag).casefold() for tag in row.get("tags") or ())
+
+
+def matches_tags(row: dict[str, Any], tags: Sequence[str]) -> bool:
+    """True when the row carries *every* requested tag.
+
+    Conjunctive rather than disjunctive: selecting a second tag should narrow
+    the grid, which is what makes clicking through tags a way to find one
+    video rather than a way to widen the result set.
+    """
+    present = {str(tag).casefold() for tag in row.get("tags") or ()}
+    return all(tag.casefold() in present for tag in tags)
+
+
+def collect_tags(directory: Path | None = None) -> list[tuple[str, int]]:
+    """Every tag in *directory* with its use count, most-used first."""
+    counts: Counter[str] = Counter()
+    for row in list_videos(directory or current_dir()):
+        counts.update(str(tag).casefold() for tag in row.get("tags") or ())
+    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+
+
+def get_video_files(
+    sort_by: str = "newest",
+    directory: Path | None = None,
+    query: str = "",
+    tags: Sequence[str] = (),
+) -> list[dict[str, Any]]:
+    """Rows for the catalogue view: filtered, then newest or title-sorted."""
     directory = Path(directory or current_dir())
     videos = []
+    query = query.strip()
 
     for row in list_videos(directory):
+        if query and not matches_query(row, query):
+            continue
+        if tags and not matches_tags(row, tags):
+            continue
         try:
             source = video_path(row)
         except UnsafePathError:

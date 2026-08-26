@@ -11,7 +11,7 @@ import threading
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
@@ -112,21 +112,58 @@ def _resolved_video_path(video: dict[str, Any]) -> Path:
 # --- pages -------------------------------------------------------------------
 
 
+SORT_OPTIONS = ("newest", "title")
+
+# Enough to browse a large tag vocabulary without rendering a wall of chips.
+MAX_TAG_CHIPS = 40
+
+
 @app.get("/")
-async def index(request: Request, sort: str = Query(default="newest")):
-    if sort not in ("title", "newest"):
+async def index(
+    request: Request,
+    sort: str = Query(default="newest"),
+    q: str = Query(default="", max_length=200),
+    tag: Annotated[list[str] | None, Query()] = None,
+):
+    """The catalogue grid.
+
+    ``q`` is a substring search over title, description and tags; ``tag`` may
+    be repeated and narrows conjunctively. Both are query parameters rather
+    than server-side state, so two people browsing at once do not fight over
+    one shared filter -- the same reasoning that already applies to ``sort``.
+    """
+    if sort not in SORT_OPTIONS:
         sort = "newest"
 
+    query = q.strip()
+    # Deduplicated, order preserved, and capped so a hand-written URL cannot
+    # turn one page render into thousands of set comparisons per row.
+    selected_tags: list[str] = []
+    for value in tag or []:
+        cleaned = value.strip().casefold()
+        if cleaned and cleaned not in selected_tags:
+            selected_tags.append(cleaned)
+        if len(selected_tags) >= MAX_TAG_CHIPS:
+            break
+
     directory = database.current_dir()
+    videos = utils.get_video_files(
+        sort_by=sort, directory=directory, query=query, tags=selected_tags
+    )
+
     return templates.TemplateResponse(
         request,
         "index.html",
         {
-            "video_files": utils.get_video_files(sort_by=sort, directory=directory),
+            "video_files": videos,
             "timestamp": int(datetime.datetime.now().timestamp()),
             "sibling_folders": utils.get_sibling_folders(directory),
             "current_folder": directory.name,
             "current_sort": sort,
+            "current_query": query,
+            "selected_tags": selected_tags,
+            "available_tags": utils.collect_tags(directory)[:MAX_TAG_CHIPS],
+            "is_filtered": bool(query or selected_tags),
             "scan_task_id": getattr(app.state, "startup_scan", None),
         },
     )

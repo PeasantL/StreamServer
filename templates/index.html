@@ -122,6 +122,46 @@
         .empty {
             color: #888;
             margin-top: 40px;
+            text-align: center;
+        }
+        .search-form {
+            display: flex;
+            gap: 6px;
+        }
+        .clear-button {
+            background-color: #333;
+            color: #ddd;
+            border: 2px solid #444;
+        }
+        .tag-bar {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 6px;
+            max-width: 900px;
+            margin-bottom: 15px;
+        }
+        .tag-chip {
+            padding: 4px 10px;
+            border: 1px solid #444;
+            border-radius: 999px;
+            background-color: #262626;
+            color: #ccc;
+            font-size: 13px;
+            text-decoration: none;
+            white-space: nowrap;
+        }
+        .tag-chip:hover { background-color: #333; }
+        .tag-chip.selected {
+            background-color: #4CAF50;
+            border-color: #4CAF50;
+            color: #fff;
+        }
+        .tag-chip .count { color: #888; }
+        .tag-chip.selected .count { color: #e8f5e9; }
+        .tag-chip:focus-visible {
+            outline: 2px solid #4CAF50;
+            outline-offset: 2px;
         }
     </style>
 </head>
@@ -140,9 +180,44 @@
           <option value="title" {% if current_sort == "title" %}selected{% endif %}>Sort by Title</option>
         </select>
 
+        {# A plain GET form, so a filtered view is a real URL the user can
+           bookmark, share or reload. The sort and any selected tags ride
+           along as hidden fields rather than being dropped on search. #}
+        <form class="search-form" method="get" action="/" role="search">
+            <input type="search" name="q" class="url-input" value="{{ current_query }}"
+                   placeholder="Search titles, descriptions, tags" aria-label="Search videos">
+            <input type="hidden" name="sort" value="{{ current_sort }}">
+            {% for tag in selected_tags %}
+            <input type="hidden" name="tag" value="{{ tag }}">
+            {% endfor %}
+            <button type="submit" class="download-button">Search</button>
+        </form>
+
+        {% if is_filtered %}
+        <a href="/?sort={{ current_sort }}"><button type="button" class="clear-button">Clear filters</button></a>
+        {% endif %}
+
         <input type="text" id="videoUrl" class="url-input" placeholder="Video URL (webm/mp4) or booru post page">
         <button type="button" id="downloadButton" class="download-button">Download</button>
     </div>
+
+    {# Selected tags first so the active filter is always visible, even when it
+       is not among the most-used tags shown below it. #}
+    {% if available_tags or selected_tags %}
+    <div class="tag-bar">
+        {% for tag in selected_tags %}
+        <a class="tag-chip selected"
+           href="/?sort={{ current_sort }}{% if current_query %}&q={{ current_query | urlencode }}{% endif %}{% for other in selected_tags if other != tag %}&tag={{ other | urlencode }}{% endfor %}"
+           title="Remove this tag">{{ tag }} &times;</a>
+        {% endfor %}
+        {% for tag, count in available_tags %}
+        {% if tag not in selected_tags %}
+        <a class="tag-chip"
+           href="/?sort={{ current_sort }}{% if current_query %}&q={{ current_query | urlencode }}{% endif %}{% for other in selected_tags %}&tag={{ other | urlencode }}{% endfor %}&tag={{ tag | urlencode }}">{{ tag }} <span class="count">{{ count }}</span></a>
+        {% endif %}
+        {% endfor %}
+    </div>
+    {% endif %}
 
     <div class="status" id="status" role="status" data-scan-task="{{ scan_task_id or '' }}"></div>
 
@@ -162,7 +237,13 @@
     </div>
 
     {% if not video_files %}
-    <p class="empty">No videos in this folder yet.</p>
+    <p class="empty">
+        {% if is_filtered %}
+        Nothing matches that search in this folder.
+        {% else %}
+        No videos in this folder yet.
+        {% endif %}
+    </p>
     {% endif %}
 
     <script>
@@ -232,6 +313,8 @@
 
             // Sorting is a display concern: a query parameter, no POST and no
             // shared server-side preference.
+            // Rebuilding from the current URL keeps q and every selected tag
+            // in place; changing the sort must not silently clear the filter.
             document.getElementById('sortDropdown').addEventListener('change', (event) => {
                 const url = new URL(window.location.href);
                 url.searchParams.set('sort', event.target.value);
