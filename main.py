@@ -15,18 +15,24 @@ from typing import Annotated, Any
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import (
+    JSONResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from jinja2 import StrictUndefined
 from pydantic import BaseModel, Field, field_validator
 
+import auth
 import boorus
 import database
 import downloads
 import utils
 from config import settings
-from middleware import whitelist_middleware
+from middleware import client_ip, whitelist_middleware
 from ranges import RangeNotSatisfiable, parse_range
 from tasks import registry
 
@@ -78,6 +84,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="StreamServer", lifespan=lifespan)
+
+# Registration order is reversed at request time: the last middleware added is
+# the outermost and runs first. The allowlist is added last so it stays the
+# outer gate -- an address that is not permitted at all should be turned away
+# without the password layer ever looking at it.
+app.middleware("http")(auth.auth_middleware)
 app.middleware("http")(whitelist_middleware)
 
 # No CORS middleware: the UI is served from this same origin, and the previous
@@ -166,6 +178,7 @@ async def index(
             "selected_tags": selected_tags,
             "available_tags": utils.collect_tags(directory)[:MAX_TAG_CHIPS],
             "is_filtered": bool(query or selected_tags),
+            "auth_enabled": auth.is_enabled(),
             "scan_task_id": getattr(app.state, "startup_scan", None),
         },
     )
@@ -184,6 +197,61 @@ async def play_video(video_id: str, request: Request):
             "video_tags": video.get("tags", []),
         },
     )
+
+
+# --- authentication ----------------------------------------------------------
+
+
+class LoginRequest(BaseModel):
+    password: str = Field(max_length=500)
+    next: str = Field(default="/", max_length=2048)
+
+
+@app.get("/login")
+async def login_form(request: Request, next: str = Query(default="/")):
+    """The password form. Reachable without a session, by definition."""
+    if not auth.is_enabled():
+        return RedirectResponse(url="/", status_code=303)
+    if auth.verify_token(request.cookies.get(auth.COOKIE_NAME)):
+        return RedirectResponse(url=auth.safe_next(next), status_code=303)
+
+    return templates.TemplateResponse(
+        request,
+        "login.html",
+        {"next": auth.safe_next(next), "error": ""},
+        status_code=200,
+    )
+
+
+@app.post("/login")
+async def login(request: Request, payload: LoginRequest):
+    if not auth.is_enabled():
+        raise HTTPException(status_code=404, detail="Authentication is not enabled.")
+
+    address = client_ip(request) or "unknown"
+    locked = auth.throttle.locked_for(address)
+    if locked:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many failed attempts. Try again in {locked} seconds.",
+        )
+
+    if not auth.check_password(payload.password):
+        auth.throttle.record_failure(address)
+        log.warning("Failed login from %s", address)
+        raise HTTPException(status_code=401, detail="Incorrect password.")
+
+    auth.throttle.reset(address)
+    response = JSONResponse({"detail": "Signed in.", "next": auth.safe_next(payload.next)})
+    auth.set_session_cookie(response, auth.issue_token())
+    return response
+
+
+@app.post("/logout")
+async def logout():
+    response = JSONResponse({"detail": "Signed out."})
+    auth.clear_session_cookie(response)
+    return response
 
 
 # --- streaming ---------------------------------------------------------------

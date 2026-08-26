@@ -240,8 +240,12 @@
         <a href="/?sort={{ current_sort }}"><button type="button" class="clear-button">Clear filters</button></a>
         {% endif %}
 
-        <input type="text" id="videoUrl" class="url-input" placeholder="Video URL (webm/mp4) or booru post page">
+        <input type="text" id="videoUrl" class="url-input" placeholder="Video URL or booru post page">
         <button type="button" id="downloadButton" class="download-button">Download</button>
+
+        {% if auth_enabled %}
+        <button type="button" id="logoutButton" class="clear-button">Sign out</button>
+        {% endif %}
     </div>
 
     {# Selected tags first so the active filter is always visible, even when it
@@ -424,6 +428,14 @@
                     downloadButton.textContent = 'Download';
                     statusEl.textContent = '';
                 }
+            }
+
+            const logoutButton = document.getElementById('logoutButton');
+            if (logoutButton) {
+                logoutButton.addEventListener('click', async () => {
+                    await fetch('/logout', { method: 'POST' }).catch(() => {});
+                    window.location.href = '/login';
+                });
             }
 
             downloadButton.addEventListener('click', startDownload);

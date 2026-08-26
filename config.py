@@ -55,6 +55,17 @@ DEFAULTS: dict[str, Any] = {
     # still exposes the original file link.
     "gelbooru_api_key": "",
     "gelbooru_user_id": "",
+    # Optional shared password. Empty disables authentication entirely, which
+    # is the default: the IP allowlist alone is the previous behaviour.
+    "auth_password": "",
+    # Key used to sign session cookies. Empty generates one per process, so
+    # sessions do not survive a restart. A hardcoded default would be worse:
+    # anyone could forge a session against any deployment.
+    "session_secret": "",
+    "session_ttl": 30 * 24 * 3600,
+    # Only set true behind HTTPS; a Secure cookie is never sent over http and
+    # the login would silently never take.
+    "session_cookie_secure": False,
     "host": "0.0.0.0",
     "port": 6969,
 }
@@ -78,6 +89,10 @@ ENV_KEYS = {
     "ALLOW_DUPLICATES": "allow_duplicates",
     "GELBOORU_API_KEY": "gelbooru_api_key",
     "GELBOORU_USER_ID": "gelbooru_user_id",
+    "AUTH_PASSWORD": "auth_password",
+    "SESSION_SECRET": "session_secret",
+    "SESSION_TTL": "session_ttl",
+    "SESSION_COOKIE_SECURE": "session_cookie_secure",
     "HOST": "host",
     "PORT": "port",
 }
@@ -103,6 +118,10 @@ class Settings:
     allow_duplicates: bool
     gelbooru_api_key: str
     gelbooru_user_id: str
+    auth_password: str
+    session_secret: str
+    session_ttl: int
+    session_cookie_secure: bool
     host: str
     port: int
 
@@ -187,6 +206,10 @@ def load_settings(config_file: str | os.PathLike[str] | None = None) -> Settings
         allow_duplicates=bool(values["allow_duplicates"]),
         gelbooru_api_key=str(values["gelbooru_api_key"]),
         gelbooru_user_id=str(values["gelbooru_user_id"]),
+        auth_password=str(values["auth_password"]),
+        session_secret=str(values["session_secret"]),
+        session_ttl=max(60, int(values["session_ttl"])),
+        session_cookie_secure=bool(values["session_cookie_secure"]),
         host=str(values["host"]),
         port=int(values["port"]),
     )

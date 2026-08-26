@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # once the test environment is in place. `ranges` and `tasks` are deliberately
 # absent: they have no configuration dependency, and reloading them would
 # rebind the exception classes that tests import by name.
-CONFIG_DEPENDENT_MODULES = ("database", "downloads", "boorus", "utils", "middleware")
+CONFIG_DEPENDENT_MODULES = ("database", "downloads", "boorus", "utils", "middleware", "auth")
 
 
 def with_peer(app, host: str, port: int = 5555):
