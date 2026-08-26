@@ -698,9 +698,17 @@ def format_size(size_bytes: int | None) -> str:
     return ""
 
 
-def format_resolution(height: int | None) -> str:
-    """The shorthand people actually read: 1080p, 720p, and so on."""
-    return f"{height}p" if height else ""
+def format_resolution(width: int | None, height: int | None) -> str:
+    """The shorthand people actually read: 1080p, 720p, and so on.
+
+    Quality labels like "1080p" name the short side of the frame, not
+    whichever dimension ffprobe happens to call "height". A portrait video
+    is taller than it is wide, so reading height alone would label a
+    1080x1920 phone clip "1920p" -- overstating it by a full tier.
+    """
+    if not width or not height:
+        return f"{height}p" if height else ""
+    return f"{min(width, height)}p"
 
 
 @dataclass(frozen=True)
@@ -763,7 +771,7 @@ def _view_model(row: dict[str, Any]) -> dict[str, Any]:
         "has_audio": row.get("has_audio", True),
         "duration": row.get("duration"),
         "duration_label": format_duration(row.get("duration")),
-        "resolution_label": format_resolution(row.get("height")),
+        "resolution_label": format_resolution(row.get("width"), row.get("height")),
         "size_bytes": row.get("size_bytes"),
         "size_label": format_size(row.get("size_bytes")),
         "creation_date": row.get("creation_date") or "",

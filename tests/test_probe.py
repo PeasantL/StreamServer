@@ -144,9 +144,20 @@ def test_size_formatting(size, expected):
     assert utils.format_size(size) == expected
 
 
-@pytest.mark.parametrize(("height", "expected"), [(None, ""), (1080, "1080p"), (720, "720p")])
-def test_resolution_formatting(height, expected):
-    assert utils.format_resolution(height) == expected
+@pytest.mark.parametrize(
+    ("width", "height", "expected"),
+    [
+        (None, None, ""),
+        (1920, 1080, "1080p"),
+        (1280, 720, "720p"),
+        # Portrait: the short side is what names the quality tier, so a
+        # 1080-wide phone clip is "1080p" even though it stands 1920 tall.
+        (1080, 1920, "1080p"),
+        (None, 1080, "1080p"),
+    ],
+)
+def test_resolution_formatting(width, height, expected):
+    assert utils.format_resolution(width, height) == expected
 
 
 # --- backfill -----------------------------------------------------------------
