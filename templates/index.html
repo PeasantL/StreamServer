@@ -329,6 +329,8 @@
                 converting: 'Converting...',
                 generating_thumbnail: 'Creating thumbnail...',
                 scanning: 'Scanning library...',
+                searching: 'Searching booru...',
+                importing: 'Importing posts...',
                 in_progress: 'Working...'
             };
 
@@ -415,11 +417,16 @@
                     }
 
                     const { task_id: taskId } = await response.json();
-                    await pollTask(taskId, (task) => {
+                    const finished = await pollTask(taskId, (task) => {
                         downloadButton.textContent = LABELS[task.status] || 'Working...';
                         statusEl.textContent = task.progress ? `${task.progress}%` : '';
                     });
 
+                    // A batch import reports what it actually did; a single
+                    // download has nothing to say beyond having worked.
+                    if (finished && finished.detail) {
+                        alert(finished.detail);
+                    }
                     window.location.href = '/';
                 } catch (error) {
                     alert(error.message);

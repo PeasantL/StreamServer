@@ -34,6 +34,10 @@ class TaskRegistry:
                 "status": "in_progress",
                 "progress": 0,
                 "error": None,
+                # A human-readable result for jobs whose outcome is more than
+                # pass or fail -- a batch import that added some and skipped
+                # others has nothing useful to say through status alone.
+                "detail": None,
                 "created_at": time.monotonic(),
                 "finished_at": None,
             }
@@ -55,9 +59,11 @@ class TaskRegistry:
             if task is None:
                 return None
             return {
+                "kind": task["kind"],
                 "status": task["status"],
                 "progress": task["progress"],
                 "error": task["error"],
+                "detail": task["detail"],
             }
 
     def _prune_locked(self) -> None:

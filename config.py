@@ -48,6 +48,8 @@ DEFAULTS: dict[str, Any] = {
     "page_size": 60,
     "max_download_bytes": 8 * 1024 * 1024 * 1024,
     "download_timeout": 30,
+    # Most posts a single booru tag-search import will fetch.
+    "import_limit": 20,
     # Set true to allow the same video to be downloaded into a folder twice.
     "allow_duplicates": False,
     # Gelbooru has required credentials on its JSON API since 2024. Leave them
@@ -86,6 +88,7 @@ ENV_KEYS = {
     "PAGE_SIZE": "page_size",
     "MAX_DOWNLOAD_BYTES": "max_download_bytes",
     "DOWNLOAD_TIMEOUT": "download_timeout",
+    "IMPORT_LIMIT": "import_limit",
     "ALLOW_DUPLICATES": "allow_duplicates",
     "GELBOORU_API_KEY": "gelbooru_api_key",
     "GELBOORU_USER_ID": "gelbooru_user_id",
@@ -115,6 +118,7 @@ class Settings:
     page_size: int
     max_download_bytes: int
     download_timeout: int
+    import_limit: int
     allow_duplicates: bool
     gelbooru_api_key: str
     gelbooru_user_id: str
@@ -203,6 +207,7 @@ def load_settings(config_file: str | os.PathLike[str] | None = None) -> Settings
         page_size=max(0, int(values["page_size"])),
         max_download_bytes=int(values["max_download_bytes"]),
         download_timeout=int(values["download_timeout"]),
+        import_limit=max(1, min(100, int(values["import_limit"]))),
         allow_duplicates=bool(values["allow_duplicates"]),
         gelbooru_api_key=str(values["gelbooru_api_key"]),
         gelbooru_user_id=str(values["gelbooru_user_id"]),

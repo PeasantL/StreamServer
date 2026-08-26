@@ -103,6 +103,11 @@ class Site:
     file_url: Callable[[Site, str, str], Resolution]
     # Shown when a URL is on a booru host but is not a single post page.
     post_url_hint: str
+    # Reads the tag string out of a search/listing URL, and turns it into
+    # posts. None for a site with no usable search API, which is what keeps
+    # rule34.us on the one-post-at-a-time path.
+    search_tags: Callable[[SplitResult], str | None] | None = None
+    search: Callable[[Site, str, str, int], list[Post]] | None = None
 
 
 # --- post id extraction ------------------------------------------------------
@@ -139,6 +144,23 @@ def _rule34us_post_id(parts: SplitResult) -> str | None:
     if query.get("r", [""])[0] != "posts/view":
         return None
     return _digits(query.get("id"))
+
+
+def _danbooru_search_tags(parts: SplitResult) -> str | None:
+    """``/posts?tags=foo+bar``, the listing page danbooru's search box lands on."""
+    if parts.path.rstrip("/") not in ("/posts", ""):
+        return None
+    tags = _query(parts).get("tags", [""])[0].strip()
+    return tags or None
+
+
+def _gelbooru_search_tags(parts: SplitResult) -> str | None:
+    """``/index.php?page=post&s=list&tags=foo``."""
+    query = _query(parts)
+    if query.get("page", [""])[0] != "post" or query.get("s", [""])[0] != "list":
+        return None
+    tags = query.get("tags", [""])[0].strip()
+    return tags or None
 
 
 # --- helpers -----------------------------------------------------------------
@@ -317,6 +339,106 @@ def _scrape_only_file_url(site: Site, page_url: str, post_id: str) -> Resolution
     return Resolution(file_url=_assert_on_domain(site, _scrape_file_url(site, page_url)))
 
 
+# --- tag searches ------------------------------------------------------------
+
+
+def _video_post(
+    site: Site,
+    origin: str,
+    post_id: str,
+    file_url: object,
+    raw_tags: object,
+) -> Post | None:
+    """One search result, or None when it is not a video this server stores.
+
+    A tag search returns whatever matched, overwhelmingly images. Filtering
+    here rather than at download time means the batch reports "6 videos" and
+    fetches six files, instead of queuing 100 and discarding 94 of them after
+    paying for each.
+    """
+    if not file_url or not post_id:
+        return None
+    absolute = urljoin(origin, str(file_url))
+    if _media_extension(absolute) not in VIDEO_EXTENSIONS:
+        return None
+    try:
+        checked = _assert_on_domain(site, absolute)
+    except BooruError:
+        log.info("%s search result %s is off-domain; skipped", site.name, post_id)
+        return None
+    return Post(
+        site=site.name,
+        post_id=str(post_id),
+        page_url=site_post_url(site, origin, str(post_id)),
+        file_url=checked,
+        tags=_parse_tags(raw_tags),
+    )
+
+
+def site_post_url(site: Site, origin: str, post_id: str) -> str:
+    """The canonical post page for an id, so an import records where it came from."""
+    if site.name == "danbooru":
+        return f"{origin}/posts/{post_id}"
+    return f"{origin}/index.php?page=post&s=view&id={post_id}"
+
+
+def _danbooru_search(site: Site, url: str, tags: str, limit: int) -> list[Post]:
+    origin = _origin(url)
+    api = f"{origin}/posts.json?{urlencode({'tags': tags, 'limit': limit})}"
+    try:
+        data = downloads.fetch_json(api, headers={"Referer": url})
+    except (ValueError, OSError) as exc:
+        raise BooruError(f"Could not search {site.name}: {exc}") from None
+
+    if not isinstance(data, list):
+        raise BooruError(f"Unexpected search response from {site.name}")
+
+    posts = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        post = _video_post(
+            site, origin, str(item.get("id") or ""), item.get("file_url"), item.get("tag_string")
+        )
+        if post is not None:
+            posts.append(post)
+    return posts
+
+
+def _gelbooru_search(site: Site, url: str, tags: str, limit: int) -> list[Post]:
+    origin = _origin(url)
+    query = {
+        "page": "dapi", "s": "post", "q": "index", "json": "1",
+        "tags": tags, "limit": limit,
+    }
+    if site.name == "gelbooru" and settings.gelbooru_api_key and settings.gelbooru_user_id:
+        query["api_key"] = settings.gelbooru_api_key
+        query["user_id"] = settings.gelbooru_user_id
+
+    api = f"{origin}/index.php?{urlencode(query)}"
+    try:
+        data = downloads.fetch_json(api, headers={"Referer": url})
+    except (ValueError, OSError) as exc:
+        raise BooruError(f"Could not search {site.name}: {exc}") from None
+
+    posts = []
+    for item in _gelbooru_posts(data):
+        post = _video_post(
+            site, origin, str(item.get("id") or ""), item.get("file_url"), item.get("tags")
+        )
+        if post is not None:
+            posts.append(post)
+
+    if not posts and site.name == "gelbooru" and not settings.gelbooru_api_key:
+        # The API answers an unauthenticated search with an empty result
+        # rather than an error, which is indistinguishable from "no matches".
+        raise BooruError(
+            "gelbooru's search API needs credentials. Set gelbooru_api_key and "
+            "gelbooru_user_id, or paste a single post URL instead."
+        )
+    return posts
+
+
 # --- site table --------------------------------------------------------------
 
 _GELBOORU_HINT = "open the post and paste its ...index.php?page=post&s=view&id=... URL"
@@ -329,6 +451,8 @@ SITES: tuple[Site, ...] = (
         post_id=_danbooru_post_id,
         file_url=_danbooru_file_url,
         post_url_hint="open the post and paste its .../posts/<id> URL",
+        search_tags=_danbooru_search_tags,
+        search=_danbooru_search,
     ),
     Site(
         name="gelbooru",
@@ -337,6 +461,8 @@ SITES: tuple[Site, ...] = (
         post_id=_gelbooru_post_id,
         file_url=_gelbooru_file_url,
         post_url_hint=_GELBOORU_HINT,
+        search_tags=_gelbooru_search_tags,
+        search=_gelbooru_search,
     ),
     # Same software as gelbooru, so the same resolver; their APIs are usually
     # open, and the page scrape covers them when they are not.
@@ -347,6 +473,8 @@ SITES: tuple[Site, ...] = (
         post_id=_gelbooru_post_id,
         file_url=_gelbooru_file_url,
         post_url_hint=_GELBOORU_HINT,
+        search_tags=_gelbooru_search_tags,
+        search=_gelbooru_search,
     ),
     Site(
         name="safebooru",
@@ -355,6 +483,8 @@ SITES: tuple[Site, ...] = (
         post_id=_gelbooru_post_id,
         file_url=_gelbooru_file_url,
         post_url_hint=_GELBOORU_HINT,
+        search_tags=_gelbooru_search_tags,
+        search=_gelbooru_search,
     ),
     Site(
         name="rule34.us",
@@ -378,6 +508,46 @@ def find_site(url: str) -> Site | None:
     if not host:
         return None
     return next((site for site in SITES if host in site.hosts), None)
+
+
+@dataclass(frozen=True)
+class SearchRequest:
+    """A recognised tag-search URL, ready to be run."""
+
+    site: Site
+    url: str
+    tags: str
+
+
+def find_search(url: str) -> SearchRequest | None:
+    """The tag search *url* names, or None if it is not one.
+
+    rule34.us has no search API, so its listing pages are deliberately not
+    recognised here and fall through to the single-post error, which tells the
+    user to paste one post instead.
+    """
+    site = find_site(url)
+    if site is None or site.search is None or site.search_tags is None:
+        return None
+    tags = site.search_tags(urlsplit(url))
+    if not tags:
+        return None
+    return SearchRequest(site=site, url=url, tags=tags)
+
+
+def resolve_search(url: str, limit: int) -> list[Post]:
+    """Video posts matching a tag-search URL, newest first as the site orders."""
+    request = find_search(url)
+    if request is None:
+        raise BooruError(f"{url!r} is not a recognised booru tag search")
+
+    assert request.site.search is not None
+    posts = request.site.search(request.site, request.url, request.tags, limit)
+    log.info(
+        "Search %r on %s matched %d video post(s)",
+        request.tags, request.site.name, len(posts),
+    )
+    return posts
 
 
 def resolve_post(url: str) -> Post:

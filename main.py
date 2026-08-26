@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import threading
 import uuid
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any
@@ -366,6 +367,21 @@ async def download_video(payload: DownloadRequest, background_tasks: BackgroundT
     reading a generic failure.
     """
     url = payload.url.strip()
+
+    # A tag search is a different job -- many posts, resolved in the worker
+    # because the search itself is a network call -- but it comes in through
+    # the same box and returns the same task_id shape, so the UI is unchanged.
+    if boorus.find_search(url) is not None:
+        task_id = registry.create("import")
+        background_tasks.add_task(
+            process_import_task,
+            task_id,
+            url,
+            database.current_dir(),
+            settings.import_limit,
+        )
+        return {"task_id": task_id}
+
     page_url: str | None = None
     title: str | None = None
     tags: list[str] = []
@@ -430,6 +446,122 @@ async def download_video(payload: DownloadRequest, background_tasks: BackgroundT
     return {"task_id": task_id}
 
 
+class DuplicateContent(Exception):
+    """The downloaded bytes are already catalogued in this directory."""
+
+    def __init__(self, existing: dict[str, Any]):
+        self.existing = existing
+        super().__init__(
+            "That file is already in this folder as "
+            f"{existing.get('title') or existing['id']!r}."
+        )
+
+
+def store_remote_video(
+    url: str,
+    extension: str,
+    directory: Path,
+    *,
+    page_url: str | None = None,
+    title: str | None = None,
+    tags: list[str] | None = None,
+    on_stage: Callable[[str, int], None] | None = None,
+) -> str:
+    """Fetch, transcode if needed, thumbnail, and register one remote video.
+
+    Returns the new video's id. Raises ``DuplicateContent`` when the bytes are
+    already catalogued, and whatever the download or transcode raised
+    otherwise; the caller decides how that reaches the user, which is what
+    lets one download and a batch import share this code.
+
+    ``page_url`` is the booru post a direct URL came from, when there was one.
+    It is recorded as the description so the entry can be traced back, and sent
+    as the Referer because booru CDNs commonly refuse hotlinked requests.
+    ``tags`` are the post's own tags, when the site's API supplied them.
+    """
+    video_id = str(uuid.uuid4())
+    remote_name = downloads.url_filename(url) or f"{video_id}{extension}"
+    report = on_stage or (lambda stage, percent: None)
+
+    report("downloading", 0)
+    response = downloads.open_stream(
+        url, headers={"Referer": page_url} if page_url else None
+    )
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        # The remote filename is metadata only; the file on disk is named
+        # from our own UUID so a hostile name cannot steer the write.
+        source = Path(tmp_dir) / f"download{extension}"
+
+        def on_progress(fraction: float | None) -> None:
+            if fraction is not None:
+                report("downloading", int(fraction * 30))
+
+        with response:
+            downloads.stream_to_file(response, source, on_progress)
+
+        # The thorough half of duplicate detection: two different URLs can
+        # serve the same file, and a booru re-upload is exactly that. Checked
+        # before the transcode, which is the expensive step worth skipping.
+        source_hash = utils.file_digest(source)
+        duplicate = database.find_duplicate(directory, source_hash=source_hash)
+        if duplicate is not None and not settings.allow_duplicates:
+            raise DuplicateContent(duplicate)
+
+        mp4_name = f"{video_id}.mp4"
+        destination = directory / mp4_name
+        archived_original = None
+
+        if extension == ".mp4":
+            shutil.move(str(source), destination)
+            report("downloading", 60)
+        else:
+            report("converting", 30)
+            # Often a remux rather than a re-encode: plenty of remote MKVs
+            # and MOVs already hold H.264 that MP4 can carry untouched.
+            utils.convert_to_mp4(source, destination)
+            report("converting", 60)
+
+            archive = utils.get_originals_dir(directory)
+            archive.mkdir(parents=True, exist_ok=True)
+            archived_original = utils.get_unique_filename(
+                f"{video_id}_original{extension}", archive
+            )
+            shutil.move(str(source), archive / archived_original)
+
+        report("generating_thumbnail", 80)
+        try:
+            utils.generate_thumbnail(destination, utils.thumbnail_path(video_id))
+        except (subprocess.SubprocessError, OSError, ValueError) as exc:
+            # A missing thumbnail is cosmetic; the video is still usable.
+            log.warning("Thumbnail generation failed for %s: %s", destination, exc)
+
+        database.add_video_to_db(
+            {
+                "id": video_id,
+                "directory": str(directory.resolve()),
+                "original_filename": remote_name,
+                # A booru names its files by md5, which makes a useless
+                # label; the resolver supplies "gelbooru 12345" instead.
+                "title": title or Path(remote_name).stem,
+                "path": mp4_name,
+                "thumbnail_path": f"{video_id}.jpg",
+                "creation_date": datetime.datetime.now().isoformat(),
+                "description": page_url or "",
+                "tags": list(tags or []),
+                # The URL and the bytes it served, so the same video is
+                # recognisable on a later re-download either way.
+                "source_url": url,
+                "source_hash": source_hash,
+                **utils.probe_media(destination).as_row_fields(),
+                "source_name": None,
+                "original_webm": archived_original,
+            }
+        )
+
+    return video_id
+
+
 def process_download_task(
     task_id: str,
     url: str,
@@ -439,105 +571,91 @@ def process_download_task(
     title: str | None = None,
     tags: list[str] | None = None,
 ) -> None:
-    """Fetch, transcode if needed, thumbnail, and register one remote video.
-
-    ``page_url`` is the booru post a direct URL came from, when there was one.
-    It is recorded as the description so the entry can be traced back, and sent
-    as the Referer because booru CDNs commonly refuse hotlinked requests.
-    ``tags`` are the post's own tags, when the site's API supplied them.
-    """
-    video_id = str(uuid.uuid4())
-    remote_name = downloads.url_filename(url) or f"{video_id}{extension}"
+    """One remote download, reported through the task registry."""
+    def report(stage: str, percent: int) -> None:
+        registry.update(task_id, status=stage, progress=percent)
 
     try:
-        registry.update(task_id, status="downloading", progress=0)
-        response = downloads.open_stream(
-            url, headers={"Referer": page_url} if page_url else None
+        store_remote_video(
+            url, extension, directory,
+            page_url=page_url, title=title, tags=tags, on_stage=report,
         )
-
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            # The remote filename is metadata only; the file on disk is named
-            # from our own UUID so a hostile name cannot steer the write.
-            source = Path(tmp_dir) / f"download{extension}"
-
-            def on_progress(fraction: float | None) -> None:
-                if fraction is not None:
-                    registry.update(task_id, progress=int(fraction * 30))
-
-            with response:
-                downloads.stream_to_file(response, source, on_progress)
-
-            # The thorough half: two different URLs can serve the same file,
-            # and a booru re-upload is exactly that. Checked before the
-            # transcode, which is the expensive step worth skipping.
-            source_hash = utils.file_digest(source)
-            duplicate = database.find_duplicate(directory, source_hash=source_hash)
-            if duplicate is not None and not settings.allow_duplicates:
-                registry.update(
-                    task_id,
-                    status="failed",
-                    error=(
-                        "That file is already in this folder as "
-                        f"{duplicate.get('title') or duplicate['id']!r}."
-                    ),
-                )
-                return
-
-            mp4_name = f"{video_id}.mp4"
-            destination = directory / mp4_name
-            archived_original = None
-
-            if extension == ".mp4":
-                shutil.move(str(source), destination)
-                registry.update(task_id, progress=60)
-            else:
-                registry.update(task_id, status="converting", progress=30)
-                # Often a remux rather than a re-encode: plenty of remote MKVs
-                # and MOVs already hold H.264 that MP4 can carry untouched.
-                utils.convert_to_mp4(source, destination)
-                registry.update(task_id, progress=60)
-
-                archive = utils.get_originals_dir(directory)
-                archive.mkdir(parents=True, exist_ok=True)
-                archived_original = utils.get_unique_filename(
-                    f"{video_id}_original{extension}", archive
-                )
-                shutil.move(str(source), archive / archived_original)
-
-            registry.update(task_id, status="generating_thumbnail", progress=80)
-            try:
-                utils.generate_thumbnail(destination, utils.thumbnail_path(video_id))
-            except (subprocess.SubprocessError, OSError, ValueError) as exc:
-                # A missing thumbnail is cosmetic; the video is still usable.
-                log.warning("Thumbnail generation failed for %s: %s", destination, exc)
-
-            database.add_video_to_db(
-                {
-                    "id": video_id,
-                    "directory": str(directory.resolve()),
-                    "original_filename": remote_name,
-                    # A booru names its files by md5, which makes a useless
-                    # label; the resolver supplies "gelbooru 12345" instead.
-                    "title": title or Path(remote_name).stem,
-                    "path": mp4_name,
-                    "thumbnail_path": f"{video_id}.jpg",
-                    "creation_date": datetime.datetime.now().isoformat(),
-                    "description": page_url or "",
-                    "tags": list(tags or []),
-                    # The URL and the bytes it served, so the same video is
-                    # recognisable on a later re-download either way.
-                    "source_url": url,
-                    "source_hash": source_hash,
-                    **utils.probe_media(destination).as_row_fields(),
-                    "source_name": None,
-                    "original_webm": archived_original,
-                }
-            )
-
         registry.update(task_id, status="completed", progress=100)
+    except DuplicateContent as exc:
+        registry.update(task_id, status="failed", error=str(exc))
     except Exception as exc:  # noqa: BLE001 - reported through the task record
         log.exception("Download task %s failed", task_id)
         registry.update(task_id, status="failed", error=str(exc))
+
+
+def process_import_task(task_id: str, search_url: str, directory: Path, limit: int) -> None:
+    """Import every video post matching a booru tag search.
+
+    Posts are fetched one at a time rather than concurrently: a booru will
+    rate-limit or block a client that opens a dozen parallel connections, and
+    a batch that gets the server banned is worse than a slow one.
+
+    One post failing does not abandon the rest. The task reports how many were
+    added, skipped as duplicates, and failed, so a partial result is legible
+    instead of looking like a total failure.
+    """
+    try:
+        registry.update(task_id, status="searching", progress=0)
+        posts = boorus.resolve_search(search_url, limit)
+    except boorus.BooruError as exc:
+        registry.update(task_id, status="failed", error=str(exc))
+        return
+    except Exception as exc:  # noqa: BLE001 - reported through the task record
+        log.exception("Booru search %s failed", search_url)
+        registry.update(task_id, status="failed", error=str(exc))
+        return
+
+    if not posts:
+        registry.update(
+            task_id, status="failed", error="That search matched no video posts."
+        )
+        return
+
+    added = skipped = failed = 0
+    for index, post in enumerate(posts):
+        # Progress is per post; the per-file stages within one download would
+        # make the bar jump backwards on every item.
+        base = int(index / len(posts) * 100)
+        registry.update(task_id, status="importing", progress=base)
+
+        extension = downloads.url_extension(post.file_url)
+        if extension not in downloads.ALLOWED_EXTENSIONS:
+            skipped += 1
+            continue
+
+        # The URL-level check, which costs nothing, before the byte-level one
+        # inside store_remote_video, which costs a download.
+        if not settings.allow_duplicates and database.find_duplicate(
+            directory, source_url=post.file_url, page_url=post.page_url
+        ):
+            skipped += 1
+            continue
+
+        try:
+            downloads.assert_safe_url(post.file_url)
+            store_remote_video(
+                post.file_url, extension, directory,
+                page_url=post.page_url, title=post.title, tags=list(post.tags),
+            )
+            added += 1
+        except DuplicateContent:
+            skipped += 1
+        except Exception as exc:  # noqa: BLE001 - one post must not sink the batch
+            log.warning("Importing %s failed: %s", post.page_url, exc)
+            failed += 1
+
+    summary = f"Imported {added} of {len(posts)} ({skipped} already here, {failed} failed)"
+    log.info("%s from %s", summary, search_url)
+
+    if added == 0 and failed:
+        registry.update(task_id, status="failed", error=summary)
+        return
+    registry.update(task_id, status="completed", progress=100, error=None, detail=summary)
 
 
 # --- metadata ----------------------------------------------------------------
