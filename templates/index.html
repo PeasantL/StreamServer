@@ -142,6 +142,29 @@
             margin-top: 40px;
             text-align: center;
         }
+        .pagination {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin: 20px 0 10px;
+            color: #bbb;
+            font-size: 14px;
+        }
+        .pagination a {
+            padding: 8px 14px;
+            border: 2px solid #444;
+            border-radius: 8px;
+            background-color: #333;
+            color: #f0f0f0;
+            text-decoration: none;
+        }
+        .pagination a:hover { background-color: #3d3d3d; }
+        .pagination a:focus-visible {
+            outline: 2px solid #4CAF50;
+            outline-offset: 2px;
+        }
         .search-form {
             display: flex;
             gap: 6px;
@@ -246,7 +269,8 @@
         <div class="video-box{% if not video.has_audio %} no-audio{% endif %}">
             <a href="/play/{{ video.id }}">
                 {% if video.thumbnail %}
-                <img src="{{ video.thumbnail }}?t={{ timestamp }}" class="thumbnail" alt="{{ video.title }}">
+                <img src="{{ video.thumbnail }}?t={{ timestamp }}" class="thumbnail"
+                     alt="{{ video.title }}" loading="lazy" decoding="async">
                 {% else %}
                 <span class="thumbnail-missing">No thumbnail</span>
                 {% endif %}
@@ -263,6 +287,22 @@
         </div>
         {% endfor %}
     </div>
+
+    {% macro page_link(number) -%}
+    /?sort={{ current_sort }}{% if current_query %}&q={{ current_query | urlencode }}{% endif %}{% for tag in selected_tags %}&tag={{ tag | urlencode }}{% endfor %}&page={{ number }}
+    {%- endmacro %}
+
+    {% if page.pages > 1 %}
+    <nav class="pagination" aria-label="Catalogue pages">
+        {% if page.has_previous %}
+        <a href="{{ page_link(page.page - 1) }}" rel="prev">&larr; Previous</a>
+        {% endif %}
+        <span>{{ page.first_index }}&ndash;{{ page.last_index }} of {{ page.total }}</span>
+        {% if page.has_next %}
+        <a href="{{ page_link(page.page + 1) }}" rel="next">Next &rarr;</a>
+        {% endif %}
+    </nav>
+    {% endif %}
 
     {% if not video_files %}
     <p class="empty">

@@ -37,6 +37,8 @@ DEFAULTS: dict[str, Any] = {
     "ffmpeg_timeout": 30,
     "convert_timeout": 3600,
     "thumbnail_width": 320,
+    # Videos per page in the catalogue grid. 0 disables paging entirely.
+    "page_size": 60,
     "max_download_bytes": 8 * 1024 * 1024 * 1024,
     "download_timeout": 30,
     # Gelbooru has required credentials on its JSON API since 2024. Leave them
@@ -59,6 +61,7 @@ ENV_KEYS = {
     "FFMPEG_TIMEOUT": "ffmpeg_timeout",
     "CONVERT_TIMEOUT": "convert_timeout",
     "THUMBNAIL_WIDTH": "thumbnail_width",
+    "PAGE_SIZE": "page_size",
     "MAX_DOWNLOAD_BYTES": "max_download_bytes",
     "DOWNLOAD_TIMEOUT": "download_timeout",
     "GELBOORU_API_KEY": "gelbooru_api_key",
@@ -80,6 +83,7 @@ class Settings:
     ffmpeg_timeout: int
     convert_timeout: int
     thumbnail_width: int
+    page_size: int
     max_download_bytes: int
     download_timeout: int
     gelbooru_api_key: str
@@ -160,6 +164,7 @@ def load_settings(config_file: str | os.PathLike[str] | None = None) -> Settings
         ffmpeg_timeout=int(values["ffmpeg_timeout"]),
         convert_timeout=int(values["convert_timeout"]),
         thumbnail_width=int(values["thumbnail_width"]),
+        page_size=max(0, int(values["page_size"])),
         max_download_bytes=int(values["max_download_bytes"]),
         download_timeout=int(values["download_timeout"]),
         gelbooru_api_key=str(values["gelbooru_api_key"]),

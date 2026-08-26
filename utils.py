@@ -511,17 +511,96 @@ def format_resolution(height: int | None) -> str:
     return f"{height}p" if height else ""
 
 
-def get_video_files(
+@dataclass(frozen=True)
+class VideoPage:
+    """One page of the catalogue, plus what is needed to page through it."""
+
+    videos: list[dict[str, Any]]
+    total: int
+    page: int
+    page_size: int
+
+    @property
+    def pages(self) -> int:
+        if self.page_size <= 0:
+            return 1
+        return max(1, -(-self.total // self.page_size))
+
+    @property
+    def has_previous(self) -> bool:
+        return self.page > 1
+
+    @property
+    def has_next(self) -> bool:
+        return self.page < self.pages
+
+    @property
+    def first_index(self) -> int:
+        """1-based index of the first item shown, for "x-y of z"."""
+        return 0 if not self.total else (self.page - 1) * self.page_size + 1
+
+    @property
+    def last_index(self) -> int:
+        return min(self.page * self.page_size, self.total)
+
+
+def _sort_key(sort_by: str):
+    """(key, reverse) for one of the supported orderings.
+
+    A row probed before the media fields existed, or one whose probe failed,
+    sorts to the end of a duration or size ordering rather than to the front.
+    """
+    if sort_by == "title":
+        return (lambda row: str(row.get("title") or Path(row["path"]).stem).lower()), False
+    if sort_by == "longest":
+        return (lambda row: row.get("duration") or 0), True
+    if sort_by == "largest":
+        return (lambda row: row.get("size_bytes") or 0), True
+    return (lambda row: str(row.get("creation_date") or "")), True
+
+
+def _view_model(row: dict[str, Any]) -> dict[str, Any]:
+    """The shape the template renders. Built per *page*, not per library."""
+    has_thumbnail = thumbnail_path(row["id"]).exists()
+    return {
+        "id": row["id"],
+        "title": row.get("title") or Path(row["path"]).stem,
+        "path": row["path"],
+        "thumbnail": f"/thumbnails/{row['id']}.jpg" if has_thumbnail else None,
+        "has_thumbnail": has_thumbnail,
+        "has_audio": row.get("has_audio", True),
+        "duration": row.get("duration"),
+        "duration_label": format_duration(row.get("duration")),
+        "resolution_label": format_resolution(row.get("height")),
+        "size_bytes": row.get("size_bytes"),
+        "size_label": format_size(row.get("size_bytes")),
+        "creation_date": row.get("creation_date") or "",
+        "description": row.get("description", ""),
+        "tags": row.get("tags", []),
+    }
+
+
+def browse_videos(
     sort_by: str = "newest",
     directory: Path | None = None,
     query: str = "",
     tags: Sequence[str] = (),
-) -> list[dict[str, Any]]:
-    """Rows for the catalogue view: filtered, then newest or title-sorted."""
-    directory = Path(directory or current_dir())
-    videos = []
-    query = query.strip()
+    page: int = 1,
+    page_size: int | None = None,
+) -> VideoPage:
+    """Filter, sort and page the catalogue for one directory.
 
+    Rows are filtered and sorted first and only the surviving page is turned
+    into a view model, so the per-tile thumbnail stat is paid for the videos
+    actually rendered rather than for the whole library. The file-existence
+    check cannot be deferred the same way: it decides whether a row counts at
+    all, and a total that included missing files would page to empty screens.
+    """
+    directory = Path(directory or current_dir())
+    query = query.strip()
+    page_size = settings.page_size if page_size is None else page_size
+
+    matched = []
     for row in list_videos(directory):
         if query and not matches_query(row, query):
             continue
@@ -534,35 +613,37 @@ def get_video_files(
             continue
         if not source.exists():
             continue
+        matched.append(row)
 
-        has_thumbnail = thumbnail_path(row["id"]).exists()
-        videos.append(
-            {
-                "id": row["id"],
-                "title": row.get("title") or Path(row["path"]).stem,
-                "path": row["path"],
-                "thumbnail": f"/thumbnails/{row['id']}.jpg" if has_thumbnail else None,
-                "has_thumbnail": has_thumbnail,
-                "has_audio": row.get("has_audio", True),
-                "duration": row.get("duration"),
-                "duration_label": format_duration(row.get("duration")),
-                "resolution_label": format_resolution(row.get("height")),
-                "size_bytes": row.get("size_bytes"),
-                "size_label": format_size(row.get("size_bytes")),
-                "creation_date": row.get("creation_date") or "",
-                "description": row.get("description", ""),
-                "tags": row.get("tags", []),
-            }
-        )
+    key, reverse = _sort_key(sort_by)
+    matched.sort(key=key, reverse=reverse)
 
-    # A row probed before this field existed, or one whose probe failed, sorts
-    # to the end of a duration or size ordering rather than to the front.
-    if sort_by == "title":
-        videos.sort(key=lambda video: video["title"].lower())
-    elif sort_by == "longest":
-        videos.sort(key=lambda video: video["duration"] or 0, reverse=True)
-    elif sort_by == "largest":
-        videos.sort(key=lambda video: video["size_bytes"] or 0, reverse=True)
-    else:
-        videos.sort(key=lambda video: video["creation_date"], reverse=True)
-    return videos
+    total = len(matched)
+    if page_size <= 0:
+        return VideoPage([_view_model(row) for row in matched], total, 1, max(total, 1))
+
+    # Clamped rather than 404: a deletion can shrink the library under a
+    # bookmarked page number, and an empty screen is a worse answer than the
+    # last real page.
+    pages = max(1, -(-total // page_size))
+    page = min(max(page, 1), pages)
+    start = (page - 1) * page_size
+
+    return VideoPage(
+        videos=[_view_model(row) for row in matched[start:start + page_size]],
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
+
+
+def get_video_files(
+    sort_by: str = "newest",
+    directory: Path | None = None,
+    query: str = "",
+    tags: Sequence[str] = (),
+) -> list[dict[str, Any]]:
+    """Every matching row for a directory, unpaged."""
+    return browse_videos(
+        sort_by=sort_by, directory=directory, query=query, tags=tags, page_size=0
+    ).videos

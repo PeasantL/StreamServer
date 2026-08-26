@@ -124,6 +124,7 @@ async def index(
     sort: str = Query(default="newest"),
     q: str = Query(default="", max_length=200),
     tag: Annotated[list[str] | None, Query()] = None,
+    page: int = Query(default=1, ge=1),
 ):
     """The catalogue grid.
 
@@ -147,15 +148,16 @@ async def index(
             break
 
     directory = database.current_dir()
-    videos = utils.get_video_files(
-        sort_by=sort, directory=directory, query=query, tags=selected_tags
+    results = utils.browse_videos(
+        sort_by=sort, directory=directory, query=query, tags=selected_tags, page=page
     )
 
     return templates.TemplateResponse(
         request,
         "index.html",
         {
-            "video_files": videos,
+            "video_files": results.videos,
+            "page": results,
             "timestamp": int(datetime.datetime.now().timestamp()),
             "sibling_folders": utils.get_sibling_folders(directory),
             "current_folder": directory.name,
