@@ -112,7 +112,7 @@ def _resolved_video_path(video: dict[str, Any]) -> Path:
 # --- pages -------------------------------------------------------------------
 
 
-SORT_OPTIONS = ("newest", "title")
+SORT_OPTIONS = ("newest", "title", "longest", "largest")
 
 # Enough to browse a large tag vocabulary without rendering a wall of chips.
 MAX_TAG_CHIPS = 40
@@ -421,7 +421,7 @@ def process_download_task(
                     "creation_date": datetime.datetime.now().isoformat(),
                     "description": page_url or "",
                     "tags": list(tags or []),
-                    "has_audio": utils.has_audio_stream(destination),
+                    **utils.probe_media(destination).as_row_fields(),
                     "source_name": None,
                     "original_webm": archived_webm,
                 }

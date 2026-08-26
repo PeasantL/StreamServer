@@ -18,6 +18,7 @@ import tempfile
 import uuid
 from collections import Counter
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,7 @@ from database import (
     current_dir,
     list_videos,
     prune_missing,
+    update_video_in_db,
 )
 
 log = logging.getLogger(__name__)
@@ -100,13 +102,69 @@ def get_sibling_folders(directory: Path | None = None) -> list[str]:
 # --- ffmpeg ------------------------------------------------------------------
 
 
-def has_audio_stream(path: Path) -> bool:
-    """True when the file carries at least one audio stream."""
+@dataclass(frozen=True)
+class MediaInfo:
+    """What one ffprobe call tells us about a file.
+
+    Every field is optional because ffprobe reports what a container happens
+    to carry: a stream copy from a source with no duration header, or a probe
+    that timed out, leaves gaps rather than failing the import.
+    """
+
+    has_audio: bool = False
+    duration: float | None = None
+    width: int | None = None
+    height: int | None = None
+    video_codec: str | None = None
+    audio_codec: str | None = None
+    size_bytes: int | None = None
+
+    def as_row_fields(self) -> dict[str, Any]:
+        """The subset stored on a database row."""
+        return {
+            "has_audio": self.has_audio,
+            "duration": self.duration,
+            "width": self.width,
+            "height": self.height,
+            "video_codec": self.video_codec,
+            "audio_codec": self.audio_codec,
+            "size_bytes": self.size_bytes,
+        }
+
+
+def _as_int(value: object) -> int | None:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_float(value: object) -> float | None:
+    try:
+        result = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    # ffprobe reports "N/A" as nan for some containers.
+    return result if result == result and result >= 0 else None
+
+
+def probe_media(path: Path) -> MediaInfo:
+    """Read duration, dimensions, codecs and size in a single ffprobe call.
+
+    This used to be ``has_audio_stream``, which paid the full cost of spawning
+    ffprobe and then discarded everything except whether an audio stream
+    existed. The same invocation with ``-show_format -show_streams`` returns
+    the rest for free, which is what the duration badges, the resolution
+    labels and the remux decision in ``convert_to_mp4`` are built on.
+
+    A failure is not fatal: an unreadable file yields an empty ``MediaInfo``
+    and the video is still catalogued.
+    """
     command = [
         "ffprobe",
         "-v", "error",
-        "-select_streams", "a",
-        "-show_entries", "stream=index",
+        "-show_format",
+        "-show_streams",
         "-of", "json",
         str(path),
     ]
@@ -117,10 +175,40 @@ def has_audio_stream(path: Path) -> bool:
             timeout=settings.ffmpeg_timeout,
             check=True,
         )
-        return bool(json.loads(result.stdout or b"{}").get("streams"))
+        data = json.loads(result.stdout or b"{}")
     except (subprocess.SubprocessError, json.JSONDecodeError, OSError) as exc:
         log.warning("ffprobe failed for %s: %s", path, exc)
-        return False
+        return MediaInfo()
+
+    if not isinstance(data, dict):
+        return MediaInfo()
+
+    streams = [item for item in data.get("streams") or [] if isinstance(item, dict)]
+    container = data.get("format") if isinstance(data.get("format"), dict) else {}
+
+    video = next((s for s in streams if s.get("codec_type") == "video"), None)
+    audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
+
+    # Duration lives on the container for MP4 and on the video stream for some
+    # WebM files, so fall back rather than reporting an unknown length.
+    duration = _as_float(container.get("duration"))
+    if duration is None and video is not None:
+        duration = _as_float(video.get("duration"))
+
+    return MediaInfo(
+        has_audio=audio is not None,
+        duration=duration,
+        width=_as_int(video.get("width")) if video else None,
+        height=_as_int(video.get("height")) if video else None,
+        video_codec=str(video.get("codec_name")) if video and video.get("codec_name") else None,
+        audio_codec=str(audio.get("codec_name")) if audio and audio.get("codec_name") else None,
+        size_bytes=_as_int(container.get("size")),
+    )
+
+
+def has_audio_stream(path: Path) -> bool:
+    """True when the file carries at least one audio stream."""
+    return probe_media(path).has_audio
 
 
 def generate_thumbnail(source: Path, destination: Path, timestamp: str = "00:00:01") -> Path:
@@ -226,7 +314,7 @@ def _new_row(directory: Path, filename: str, *, source_name: str | None = None) 
         "creation_date": created,
         "description": "",
         "tags": [],
-        "has_audio": has_audio_stream(path),
+        **probe_media(path).as_row_fields(),
         # Recorded so a re-scan can tell that this WebM was already converted.
         # The previous check compared against a freshly generated UUID and so
         # could never be true.
@@ -290,12 +378,40 @@ def convert_webm_files(directory: Path) -> int:
     return converted
 
 
+# Present on every row written since media probing was introduced. Its absence
+# is what distinguishes a row that predates the feature from one whose probe
+# genuinely found nothing.
+_PROBE_MARKER = "video_codec"
+
+
+def backfill_media_info(directory: Path) -> int:
+    """Probe rows catalogued before duration and size were recorded.
+
+    Without this an existing library would show no badges until every file was
+    re-added by hand. Rows already carrying the fields are skipped, so the
+    cost is paid once rather than on every scan.
+    """
+    filled = 0
+    for row in list_videos(directory):
+        if _PROBE_MARKER in row:
+            continue
+        source = Path(directory) / row["path"]
+        if not source.exists():
+            continue
+        update_video_in_db(row["id"], probe_media(source).as_row_fields(), directory)
+        filled += 1
+
+    if filled:
+        log.info("Backfilled media info for %d row(s) in %s", filled, directory)
+    return filled
+
+
 def scan_library(directory: Path | None = None) -> dict[str, int]:
     """Bring the database in line with what is on disk for one directory."""
     directory = Path(directory or current_dir())
     if not directory.is_dir():
         log.warning("Cannot scan %s: not a directory", directory)
-        return {"converted": 0, "added": 0, "pruned": 0}
+        return {"converted": 0, "added": 0, "pruned": 0, "backfilled": 0}
 
     converted = convert_webm_files(directory)
 
@@ -318,11 +434,18 @@ def scan_library(directory: Path | None = None) -> dict[str, int]:
         if source.exists():
             _ensure_thumbnail(row["id"], source)
 
+    filled = backfill_media_info(directory)
+
     log.info(
-        "Scanned %s: %d converted, %d added, %d pruned",
-        directory, converted, len(new_rows), pruned,
+        "Scanned %s: %d converted, %d added, %d pruned, %d backfilled",
+        directory, converted, len(new_rows), pruned, filled,
     )
-    return {"converted": converted, "added": len(new_rows), "pruned": pruned}
+    return {
+        "converted": converted,
+        "added": len(new_rows),
+        "pruned": pruned,
+        "backfilled": filled,
+    }
 
 
 def matches_query(row: dict[str, Any], query: str) -> bool:
@@ -359,6 +482,35 @@ def collect_tags(directory: Path | None = None) -> list[tuple[str, int]]:
     return sorted(counts.items(), key=lambda item: (-item[1], item[0]))
 
 
+def format_duration(seconds: float | None) -> str:
+    """``H:MM:SS`` past an hour, ``M:SS`` below it. Empty when unknown."""
+    if seconds is None or seconds < 0:
+        return ""
+    total = int(seconds)
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
+def format_size(size_bytes: int | None) -> str:
+    """Human-readable file size. Empty when unknown."""
+    if size_bytes is None or size_bytes < 0:
+        return ""
+    size = float(size_bytes)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return ""
+
+
+def format_resolution(height: int | None) -> str:
+    """The shorthand people actually read: 1080p, 720p, and so on."""
+    return f"{height}p" if height else ""
+
+
 def get_video_files(
     sort_by: str = "newest",
     directory: Path | None = None,
@@ -392,14 +544,25 @@ def get_video_files(
                 "thumbnail": f"/thumbnails/{row['id']}.jpg" if has_thumbnail else None,
                 "has_thumbnail": has_thumbnail,
                 "has_audio": row.get("has_audio", True),
+                "duration": row.get("duration"),
+                "duration_label": format_duration(row.get("duration")),
+                "resolution_label": format_resolution(row.get("height")),
+                "size_bytes": row.get("size_bytes"),
+                "size_label": format_size(row.get("size_bytes")),
                 "creation_date": row.get("creation_date") or "",
                 "description": row.get("description", ""),
                 "tags": row.get("tags", []),
             }
         )
 
+    # A row probed before this field existed, or one whose probe failed, sorts
+    # to the end of a duration or size ordering rather than to the front.
     if sort_by == "title":
         videos.sort(key=lambda video: video["title"].lower())
+    elif sort_by == "longest":
+        videos.sort(key=lambda video: video["duration"] or 0, reverse=True)
+    elif sort_by == "largest":
+        videos.sort(key=lambda video: video["size_bytes"] or 0, reverse=True)
     else:
         videos.sort(key=lambda video: video["creation_date"], reverse=True)
     return videos

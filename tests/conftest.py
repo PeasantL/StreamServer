@@ -89,7 +89,9 @@ def app_module(app_env, monkeypatch):
     import utils
 
     monkeypatch.setattr(
-        utils, "scan_library", lambda directory=None: {"converted": 0, "added": 0, "pruned": 0}
+        utils,
+        "scan_library",
+        lambda directory=None: {"converted": 0, "added": 0, "pruned": 0, "backfilled": 0},
     )
 
     if "main" in sys.modules:
