@@ -711,6 +711,17 @@ def format_resolution(width: int | None, height: int | None) -> str:
     return f"{min(width, height)}p"
 
 
+def format_views(count: int | None) -> str:
+    """A view badge, or "" for a video nobody has opened yet.
+
+    An unwatched library would otherwise wear "0 views" on every tile, which
+    is noise: the absence of a badge says the same thing more quietly.
+    """
+    if not count or count < 1:
+        return ""
+    return "1 view" if count == 1 else f"{count} views"
+
+
 @dataclass(frozen=True)
 class VideoPage:
     """One page of the catalogue, plus what is needed to page through it."""
@@ -756,6 +767,8 @@ def _sort_key(sort_by: str):
         return (lambda row: row.get("duration") or 0), True
     if sort_by == "largest":
         return (lambda row: row.get("size_bytes") or 0), True
+    if sort_by == "most_viewed":
+        return (lambda row: row.get("view_count") or 0), True
     return (lambda row: str(row.get("creation_date") or "")), True
 
 
@@ -774,6 +787,8 @@ def _view_model(row: dict[str, Any]) -> dict[str, Any]:
         "resolution_label": format_resolution(row.get("width"), row.get("height")),
         "size_bytes": row.get("size_bytes"),
         "size_label": format_size(row.get("size_bytes")),
+        "view_count": row.get("view_count") or 0,
+        "views_label": format_views(row.get("view_count")),
         "creation_date": row.get("creation_date") or "",
         "description": row.get("description", ""),
         "tags": row.get("tags", []),

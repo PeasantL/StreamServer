@@ -260,6 +260,7 @@
           <option value="title" {% if current_sort == "title" %}selected{% endif %}>Sort by Title</option>
           <option value="longest" {% if current_sort == "longest" %}selected{% endif %}>Sort by Longest</option>
           <option value="largest" {% if current_sort == "largest" %}selected{% endif %}>Sort by Largest</option>
+          <option value="most_viewed" {% if current_sort == "most_viewed" %}selected{% endif %}>Sort by Most Viewed</option>
         </select>
 
         {# A plain GET form, so a filtered view is a real URL the user can
@@ -328,10 +329,11 @@
             </a>
             {# Overlaid on the thumbnail rather than given their own row, so
                adding them does not change the grid's tile geometry. #}
-            {% if video.duration_label or video.resolution_label %}
+            {% if video.duration_label or video.resolution_label or video.views_label %}
             <div class="badges">
                 {% if video.duration_label %}<span class="badge">{{ video.duration_label }}</span>{% endif %}
                 {% if video.resolution_label %}<span class="badge">{{ video.resolution_label }}</span>{% endif %}
+                {% if video.views_label %}<span class="badge">{{ video.views_label }}</span>{% endif %}
             </div>
             {% endif %}
         </div>

@@ -255,6 +255,24 @@ def update_video_in_db(
         return video
 
 
+def record_view(video_id: str, directory: Path | None = None) -> int | None:
+    """Count one viewing of *video_id*, returning the new total.
+
+    Read-modify-write under the same lock as every other mutation, so two
+    people opening the same video at once cannot both read 4 and both write 5.
+    Rows catalogued before view counting existed have no ``view_count``; the
+    first view starts them at 1 rather than needing a migration.
+    """
+    with _lock:
+        video = get_video_by_id(video_id, directory)
+        if video is None:
+            return None
+        count = video.get("view_count")
+        video["view_count"] = (count if isinstance(count, int) else 0) + 1
+        save_db()
+        return video["view_count"]
+
+
 def delete_video_from_db(video_id: str, directory: Path | None = None) -> bool:
     with _lock:
         key = str(Path(directory or current_dir()).resolve())
