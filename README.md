@@ -52,7 +52,7 @@ Values resolve highest-precedence first: environment variable, then
 | `ffmpeg_timeout` | `FFMPEG_TIMEOUT` | `30` | Seconds allowed for a thumbnail or probe. |
 | `convert_timeout` | `CONVERT_TIMEOUT` | `3600` | Seconds allowed for one WebM→MP4 transcode. |
 | `thumbnail_width` | `THUMBNAIL_WIDTH` | `320` | Maximum thumbnail width in pixels. |
-| `page_size` | `PAGE_SIZE` | `60` | Videos per page in the grid; `0` shows them all. |
+| `page_size` | `PAGE_SIZE` | `100` | Videos per page in the grid; `0` shows them all. |
 | `video_encoder` | `VIDEO_ENCODER` | `libx264` | Encoder used when a file must be re-encoded. |
 | `hwaccel` | `HWACCEL` | *(empty)* | ffmpeg hardware decoder (`cuda`, `qsv`, `vaapi`, `videotoolbox`). |
 | `max_download_bytes` | `MAX_DOWNLOAD_BYTES` | `8589934592` | Ceiling on a single remote download. |
