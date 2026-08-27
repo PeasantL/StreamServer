@@ -126,7 +126,7 @@ def _resolved_video_path(video: dict[str, Any]) -> Path:
 # --- pages -------------------------------------------------------------------
 
 
-SORT_OPTIONS = ("newest", "title", "longest", "largest")
+SORT_OPTIONS = ("newest", "most_viewed")
 
 # Enough to browse a large tag vocabulary without rendering a wall of chips.
 MAX_TAG_CHIPS = 40
@@ -213,6 +213,13 @@ async def play_video(
         query=query,
         tags=selected_tags,
     )
+
+    # Counted after the neighbours are resolved, and not on /videos/{id}: that
+    # route is fetched once per range request, so one playback would register
+    # dozens. Opening the player is the closest thing to "watched it" we can
+    # observe -- and counting it first would reorder a most-viewed sort out
+    # from under the next and previous links the user is about to follow.
+    database.record_view(video_id)
 
     # Query string shared by the back link and both neighbour links, so
     # stepping through videos never loses the filter that framed them.

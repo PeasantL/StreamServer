@@ -81,18 +81,6 @@
             font-size: 12px;
             font-variant-numeric: tabular-nums;
         }
-        .video-title {
-            width: 100%;
-            padding: 5px;
-            box-sizing: border-box;
-            background-color: rgba(0, 0, 0, 0.6);
-            position: absolute;
-            bottom: 0;
-            left: 0;
-            text-overflow: ellipsis;
-            overflow: hidden;
-            white-space: nowrap;
-        }
         .url-input {
             padding: 10px;
             font-size: 16px;
@@ -269,9 +257,7 @@
 
         <select id="sortDropdown" class="sort-dropdown" aria-label="Sort videos">
           <option value="newest" {% if current_sort == "newest" %}selected{% endif %}>Sort by Newest</option>
-          <option value="title" {% if current_sort == "title" %}selected{% endif %}>Sort by Title</option>
-          <option value="longest" {% if current_sort == "longest" %}selected{% endif %}>Sort by Longest</option>
-          <option value="largest" {% if current_sort == "largest" %}selected{% endif %}>Sort by Largest</option>
+          <option value="most_viewed" {% if current_sort == "most_viewed" %}selected{% endif %}>Sort by Most Viewed</option>
         </select>
 
         {# A plain GET form, so a filtered view is a real URL the user can
@@ -329,7 +315,8 @@
         <div class="video-box{% if not video.has_audio %} no-audio{% endif %}">
             {# The player is given the grid's sort and filter so its next and
                previous steps follow what the user is actually looking at. #}
-            <a href="/play/{{ video.id }}?{{ view_context() }}">
+            <a href="/play/{{ video.id }}?{{ view_context() }}"
+               title="{{ video.title }}{% if video.size_label %} ({{ video.size_label }}){% endif %}">
                 {% if video.thumbnail %}
                 <img src="{{ video.thumbnail }}?t={{ timestamp }}" class="thumbnail"
                      alt="{{ video.title }}" loading="lazy" decoding="async">
@@ -339,13 +326,13 @@
             </a>
             {# Overlaid on the thumbnail rather than given their own row, so
                adding them does not change the grid's tile geometry. #}
-            {% if video.duration_label or video.resolution_label %}
+            {% if video.duration_label or video.resolution_label or video.views_label %}
             <div class="badges">
                 {% if video.duration_label %}<span class="badge">{{ video.duration_label }}</span>{% endif %}
                 {% if video.resolution_label %}<span class="badge">{{ video.resolution_label }}</span>{% endif %}
+                {% if video.views_label %}<span class="badge">{{ video.views_label }}</span>{% endif %}
             </div>
             {% endif %}
-            <div class="video-title" title="{{ video.title }}{% if video.size_label %} ({{ video.size_label }}){% endif %}">{{ video.title }}</div>
         </div>
         {% endfor %}
     </div>

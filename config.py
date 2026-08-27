@@ -45,7 +45,7 @@ DEFAULTS: dict[str, Any] = {
     "hwaccel": "",
     "thumbnail_width": 320,
     # Videos per page in the catalogue grid. 0 disables paging entirely.
-    "page_size": 60,
+    "page_size": 100,
     "max_download_bytes": 8 * 1024 * 1024 * 1024,
     "download_timeout": 30,
     # Most posts a single booru tag-search import will fetch.

@@ -96,7 +96,11 @@ def test_a_query_and_a_tag_apply_together(library):
 
 
 def test_filtering_still_respects_the_sort_order(library):
-    assert _ids(sort_by="title", tags=["scenery"]) == ["b", "a"]
+    import database
+
+    database.record_view("b")
+
+    assert _ids(sort_by="most_viewed", tags=["scenery"]) == ["b", "a"]
     assert _ids(sort_by="newest", tags=["scenery"]) == ["a", "b"]
 
 

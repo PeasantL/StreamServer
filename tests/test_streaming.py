@@ -156,8 +156,11 @@ def test_sort_is_a_query_parameter(client, app_env):
             }
         )
 
-    by_title = test_client.get("/?sort=title").text
-    assert by_title.index("Apple") < by_title.index("Zebra")
+    # Apple is the newer of the two; one view of Zebra flips the other ordering.
+    database.record_view("v0")
+
+    by_views = test_client.get("/?sort=most_viewed").text
+    assert by_views.index("Zebra") < by_views.index("Apple")
 
     by_newest = test_client.get("/?sort=newest").text
     assert by_newest.index("Apple") < by_newest.index("Zebra")
