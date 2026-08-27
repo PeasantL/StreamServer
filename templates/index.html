@@ -81,18 +81,6 @@
             font-size: 12px;
             font-variant-numeric: tabular-nums;
         }
-        .video-title {
-            width: 100%;
-            padding: 5px;
-            box-sizing: border-box;
-            background-color: rgba(0, 0, 0, 0.6);
-            position: absolute;
-            bottom: 0;
-            left: 0;
-            text-overflow: ellipsis;
-            overflow: hidden;
-            white-space: nowrap;
-        }
         .url-input {
             padding: 10px;
             font-size: 16px;
@@ -329,7 +317,8 @@
         <div class="video-box{% if not video.has_audio %} no-audio{% endif %}">
             {# The player is given the grid's sort and filter so its next and
                previous steps follow what the user is actually looking at. #}
-            <a href="/play/{{ video.id }}?{{ view_context() }}">
+            <a href="/play/{{ video.id }}?{{ view_context() }}"
+               title="{{ video.title }}{% if video.size_label %} ({{ video.size_label }}){% endif %}">
                 {% if video.thumbnail %}
                 <img src="{{ video.thumbnail }}?t={{ timestamp }}" class="thumbnail"
                      alt="{{ video.title }}" loading="lazy" decoding="async">
@@ -345,7 +334,6 @@
                 {% if video.resolution_label %}<span class="badge">{{ video.resolution_label }}</span>{% endif %}
             </div>
             {% endif %}
-            <div class="video-title" title="{{ video.title }}{% if video.size_label %} ({{ video.size_label }}){% endif %}">{{ video.title }}</div>
         </div>
         {% endfor %}
     </div>
