@@ -229,28 +229,23 @@ def test_backfill_ignores_rows_whose_file_is_missing(monkeypatch, app_env):
 
 
 # --- sorting ------------------------------------------------------------------
+#
+# Duration and size are still probed and still shown on the badges, but they are
+# no longer orderings the grid offers; see tests/test_views.py for the two that
+# remain.
 
 
-def test_sorting_by_duration_and_size(app_env):
-    _add_row(app_env, "short", duration=10.0, size_bytes=100, video_codec="h264")
-    _add_row(app_env, "long", duration=900.0, size_bytes=50, video_codec="h264")
+def test_a_probed_row_still_sorts_by_date(app_env):
+    """Adding the media fields must not disturb the default ordering."""
+    _add_row(
+        app_env, "old",
+        duration=10.0, size_bytes=100, video_codec="h264",
+        creation_date="2024-01-01T00:00:00",
+    )
+    _add_row(
+        app_env, "new",
+        duration=900.0, size_bytes=50, video_codec="h264",
+        creation_date="2024-06-01T00:00:00",
+    )
 
-    longest = [v["id"] for v in utils.get_video_files(sort_by="longest")]
-    largest = [v["id"] for v in utils.get_video_files(sort_by="largest")]
-
-    assert longest == ["long", "short"]
-    assert largest == ["short", "long"]
-
-
-def test_rows_with_no_duration_sort_last(app_env):
-    _add_row(app_env, "known", duration=10.0, video_codec="h264")
-    _add_row(app_env, "unknown", video_codec="h264")
-
-    assert [v["id"] for v in utils.get_video_files(sort_by="longest")] == ["known", "unknown"]
-
-
-def test_the_index_accepts_the_new_sort_options(client, app_env):
-    test_client, _ = client
-
-    for sort in ("longest", "largest"):
-        assert test_client.get(f"/?sort={sort}").status_code == 200
+    assert [v["id"] for v in utils.get_video_files()] == ["new", "old"]

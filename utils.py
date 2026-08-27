@@ -758,15 +758,9 @@ class VideoPage:
 def _sort_key(sort_by: str):
     """(key, reverse) for one of the supported orderings.
 
-    A row probed before the media fields existed, or one whose probe failed,
-    sorts to the end of a duration or size ordering rather than to the front.
+    A row that has never been opened counts as zero views, so it sorts to the
+    end of a most-viewed ordering rather than to the front.
     """
-    if sort_by == "title":
-        return (lambda row: str(row.get("title") or Path(row["path"]).stem).lower()), False
-    if sort_by == "longest":
-        return (lambda row: row.get("duration") or 0), True
-    if sort_by == "largest":
-        return (lambda row: row.get("size_bytes") or 0), True
     if sort_by == "most_viewed":
         return (lambda row: row.get("view_count") or 0), True
     return (lambda row: str(row.get("creation_date") or "")), True

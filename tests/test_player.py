@@ -41,8 +41,14 @@ def test_the_last_video_has_no_next(library):
 
 
 def test_neighbours_follow_the_sort_order(library):
-    """Title order is a, b, c -- the reverse of the default."""
-    assert utils.find_neighbours("b", sort_by="title") == ("a", "c")
+    """Most-viewed order is a, b, c -- the reverse of the default."""
+    import database
+
+    for video_id, views in (("a", 3), ("b", 2), ("c", 1)):
+        for _ in range(views):
+            database.record_view(video_id)
+
+    assert utils.find_neighbours("b", sort_by="most_viewed") == ("a", "c")
 
 
 def test_neighbours_respect_an_active_tag_filter(library):

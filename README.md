@@ -83,8 +83,7 @@ client address.
 
 The grid is paged at `page_size` videos and each tile shows the duration,
 resolution and view count over its thumbnail. Opening the player counts one
-view. The toolbar sorts by newest, title, longest, largest or most viewed, and
-filters two ways:
+view. The toolbar sorts by newest or most viewed, and filters two ways:
 
 - **Search** (`?q=`) matches a substring of the title, description or any tag.
 - **Tag chips** (`?tag=`, repeatable) narrow *conjunctively* — a second tag

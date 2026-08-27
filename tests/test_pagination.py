@@ -66,10 +66,18 @@ def test_pages_do_not_overlap_or_drop_videos(many_videos):
 
 
 def test_paging_preserves_the_sort_order(many_videos):
-    """Page 1 of a title sort must hold the alphabetically first titles."""
-    first = [v["title"] for v in utils.browse_videos(sort_by="title", page=1, page_size=10).videos]
+    """Page 1 of a most-viewed sort must hold the ten most watched videos."""
+    import database
 
-    assert first == [f"Video {index:02d}" for index in range(10)]
+    # v24 watched most, v15 least, so the top ten are v24 down to v15.
+    for index in range(15, 25):
+        for _ in range(index):
+            database.record_view(f"v{index:02d}")
+
+    page = utils.browse_videos(sort_by="most_viewed", page=1, page_size=10)
+    first = [v["id"] for v in page.videos]
+
+    assert first == [f"v{index:02d}" for index in range(24, 14, -1)]
 
 
 def test_a_page_beyond_the_end_clamps_to_the_last(many_videos):
@@ -143,10 +151,10 @@ def test_the_index_renders_pagination_controls(paged_client, many_videos):
 def test_pagination_links_carry_the_active_filter(paged_client, many_videos):
     test_client, _ = paged_client
 
-    response = test_client.get("/?tag=even&sort=title")
+    response = test_client.get("/?tag=even&sort=most_viewed")
 
     assert "tag=even" in response.text
-    assert "sort=title" in response.text
+    assert "sort=most_viewed" in response.text
 
 
 def test_thumbnails_are_lazily_loaded(client, app_env):

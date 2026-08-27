@@ -126,7 +126,7 @@ def _resolved_video_path(video: dict[str, Any]) -> Path:
 # --- pages -------------------------------------------------------------------
 
 
-SORT_OPTIONS = ("newest", "title", "longest", "largest", "most_viewed")
+SORT_OPTIONS = ("newest", "most_viewed")
 
 # Enough to browse a large tag vocabulary without rendering a wall of chips.
 MAX_TAG_CHIPS = 40
