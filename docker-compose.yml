@@ -1,7 +1,7 @@
 services:
-  video-server:
+  streamserve:
     build: .
-    container_name: video-server
+    container_name: streamserve
     ports:
       - "${PORT:-6969}:6969"
     volumes:

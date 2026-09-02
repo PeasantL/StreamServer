@@ -1,4 +1,4 @@
-# StreamServer
+# StreamServe
 
 A small self-hosted video catalogue and streaming server. It scans a folder of
 videos, generates thumbnails with ffmpeg, transcodes WebM to MP4 so browsers and
@@ -231,6 +231,10 @@ pip install -r requirements.txt -r requirements-dev.txt
 ruff check .
 pytest
 ```
+
+Branding lives in `static/`: `icon-32.png` is the tab favicon and
+`icon-180.png` the icon iOS and Android use when the page is saved to a home
+screen. `/static/` is served without a session so the login page can show it.
 
 Tests cover the Range parser, the IP allowlist and forwarded-header handling,
 path containment, the SSRF guard, booru URL and tag-search resolution, partial

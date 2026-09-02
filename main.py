@@ -42,7 +42,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
 )
-log = logging.getLogger("streamserver")
+log = logging.getLogger("streamserve")
 
 MIME_TYPES = {".mp4": "video/mp4", ".webm": "video/webm"}
 STREAM_CHUNK_SIZE = 1024 * 1024
@@ -85,7 +85,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="StreamServer", lifespan=lifespan)
+app = FastAPI(title="StreamServe", lifespan=lifespan)
 
 # Registration order is reversed at request time: the last middleware added is
 # the outermost and runs first. The allowlist is added last so it stays the
@@ -879,6 +879,14 @@ async def generate_custom_thumbnail(
 async def healthz():
     return JSONResponse({"status": "ok"})
 
+
+# Branding assets ship with the code, so they sit beside it rather than in a
+# configurable directory the way thumbnails do.
+app.mount(
+    "/static",
+    StaticFiles(directory=str(Path(__file__).parent / "static")),
+    name="static",
+)
 
 settings.thumbnail_dir.mkdir(parents=True, exist_ok=True)
 app.mount(
