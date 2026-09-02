@@ -33,4 +33,4 @@ jobs:
       # Guards the failure mode where the image referenced files that were not
       # in the repository, so a clean clone could never build.
       - name: Build image
-        run: docker build -t streamserver:ci .
+        run: docker build -t streamserve:ci .

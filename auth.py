@@ -32,11 +32,15 @@ from config import settings
 
 log = logging.getLogger(__name__)
 
-COOKIE_NAME = "streamserver_session"
+COOKIE_NAME = "streamserve_session"
 
 # Reachable without a session: the login form itself, the endpoint that grants
 # one, and the health check the container polls from inside its own network.
 EXEMPT_PATHS = frozenset({"/login", "/healthz"})
+
+# The login page carries the site icon, which the browser fetches before
+# there is any session to check.
+EXEMPT_PREFIXES = ("/static/",)
 
 # A shared password with no throttle is a password anyone patient can guess.
 MAX_FAILURES = 5
@@ -150,7 +154,8 @@ def _wants_json(request: Request) -> bool:
 
 async def auth_middleware(request: Request, call_next):
     """Require a valid session cookie once a password is configured."""
-    if not is_enabled() or request.url.path in EXEMPT_PATHS:
+    path = request.url.path
+    if not is_enabled() or path in EXEMPT_PATHS or path.startswith(EXEMPT_PREFIXES):
         return await call_next(request)
 
     if verify_token(request.cookies.get(COOKIE_NAME)):

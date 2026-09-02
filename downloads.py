@@ -35,7 +35,7 @@ CHUNK_SIZE = 1024 * 1024
 
 # Booru APIs rate-limit or reject the default ``python-requests/x.y`` agent,
 # and danbooru's terms ask that clients identify themselves.
-USER_AGENT = "StreamServer/1.0 (+https://github.com/PeasantL/StreamServer)"
+USER_AGENT = "StreamServe/1.0 (+https://github.com/PeasantL/StreamServe)"
 
 # Ceiling for a page or API response read into memory. Distinct from
 # max_download_bytes, which sizes a video going to disk.

@@ -15,6 +15,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY *.py ./
 COPY templates/ ./templates/
+COPY static/ ./static/
 # config.json is gitignored, so the image ships the example instead and lets
 # environment variables (or a mounted file) override it at runtime.
 COPY config_example.json ./config.json
